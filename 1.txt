@@ -1,0 +1,733 @@
+"use client"
+
+import type React from "react"
+
+import { useEffect, useRef, useState } from "react"
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Download, Camera, Trash2, Upload, UserPlus } from "lucide-react"
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
+import { Html5Qrcode } from "html5-qrcode"
+import ExcelJS from "exceljs"
+import jsPDF from "jspdf"
+
+export default function Home() {
+  const [open, setOpen] = useState(false)
+  const [attendance, setAttendance] = useState<{ student: string; time: string }[]>([])
+  const scannerRef = useRef<Html5Qrcode | null>(null)
+
+  // Load attendance
+  useEffect(() => {
+    const raw = localStorage.getItem("attendance_simple")
+    if (raw) {
+      try {
+        setAttendance(JSON.parse(raw))
+      } catch {
+        console.error("Invalid saved attendance")
+      }
+    }
+  }, [])
+
+  // Save attendance
+  useEffect(() => {
+    localStorage.setItem("attendance_simple", JSON.stringify(attendance))
+  }, [attendance])
+
+  function nowTime(): string {
+  const n = new Date()
+  let h = n.getHours()
+  const m = String(n.getMinutes()).padStart(2, "0")
+  const s = String(n.getSeconds()).padStart(2, "0")
+  const ampm = h >= 12 ? "PM" : "AM"
+  h = h % 12 || 12
+  // Use local date instead of UTC
+  const year = n.getFullYear()
+  const month = String(n.getMonth() + 1).padStart(2, "0")
+  const day = String(n.getDate()).padStart(2, "0")
+  const date = `${year}-${month}-${day}`
+  return `${date} ${String(h).padStart(2, "0")}:${m}:${s} ${ampm}`
+  }
+
+  function addAttendance(student: string) {
+  const now = new Date();
+  const dateStr = now.toISOString().split("T")[0]; // YYYY-MM-DD only
+
+  setAttendance((prev) => {
+    const updated = [...prev, { student, time: nowTime() }];
+    localStorage.setItem("attendance_simple", JSON.stringify(updated));
+    return updated;
+  });
+
+  // Update persistent history (by date)
+  let history: Record<string, string[]> = {};
+  try {
+    history = JSON.parse(localStorage.getItem("attendance_history") || "{}");
+  } catch {}
+  
+  if (!history[dateStr]) history[dateStr] = [];
+  if (!history[dateStr].includes(student)) {
+    history[dateStr].push(student);
+  }
+  
+  localStorage.setItem("attendance_history", JSON.stringify(history));
+}
+
+
+  function parseStudentFromQr(qrMessage: string): string | null {
+    try {
+      const obj = JSON.parse(qrMessage)
+      return obj.student || null
+    } catch {
+      return qrMessage
+    }
+  }
+
+  // Parse a YYYY-MM-DD date string as a local Date (avoid new Date('YYYY-MM-DD') which is treated as UTC)
+  function parseLocalDateFromYMD(dateStr: string): Date {
+    const parts = (dateStr || "").split("-").map((p) => Number(p))
+    const year = parts[0] || 0
+    const month = (parts[1] || 1) - 1
+    const day = parts[2] || 1
+    return new Date(year, month, day)
+  }
+
+  async function startScanner() {
+    try {
+      const readerElem = document.getElementById("reader")
+      if (!readerElem) {
+        console.warn("Reader element not found yet.")
+        return
+      }
+
+      if (!scannerRef.current) {
+        scannerRef.current = new Html5Qrcode("reader")
+      }
+
+      await scannerRef.current.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: 250 },
+        (decoded: string) => {
+          const student = parseStudentFromQr(decoded) || "(Unknown)"
+          addAttendance(student)
+          stopScanner()
+          setOpen(false)
+        },
+        (err: string) => {
+          console.warn("QR scan error:", err)
+        },
+      )
+    } catch (e) {
+      console.error("Scanner error:", e)
+      alert("Could not access camera. You can upload a QR code image instead.")
+      stopScanner()
+    }
+  }
+
+  async function stopScanner() {
+    if (scannerRef.current) {
+      try {
+        await scannerRef.current.stop()
+        await scannerRef.current.clear()
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    try {
+      if (scannerRef.current) {
+        try {
+          await scannerRef.current.stop()
+        } catch {
+          // ignore if already stopped
+        }
+      }
+
+      if (!scannerRef.current) {
+        scannerRef.current = new Html5Qrcode("reader")
+      }
+
+      // Try scanning the file. html5-qrcode's scanFile can return different shapes
+      let scanResult: any = null
+      try {
+        scanResult = await scannerRef.current.scanFile(file, true)
+      } catch (scanErr) {
+        console.error('scanFile failed:', scanErr)
+        alert('Failed to read QR code from image. Check console for details and try a clearer image.')
+        setOpen(false)
+        return
+      }
+
+      // Normalize possible return shapes
+      let decodedText: string | null = null
+      if (typeof scanResult === 'string') {
+        decodedText = scanResult
+      } else if (scanResult && typeof scanResult.decodedText === 'string') {
+        decodedText = scanResult.decodedText
+      } else if (Array.isArray(scanResult) && scanResult.length > 0) {
+        // array of results
+        const first = scanResult[0]
+        decodedText = typeof first === 'string' ? first : first.decodedText || null
+      }
+
+      if (!decodedText) {
+        console.error('No decoded text returned from scanFile:', scanResult)
+        alert('No QR code detected in the selected image. Try a clearer image or take a photo with better lighting.')
+        setOpen(false)
+        return
+      }
+
+      const student = parseStudentFromQr(decodedText) || "(Unknown)"
+      addAttendance(student)
+
+      setOpen(false)
+    } catch (err) {
+      console.error("Image scan failed:", err)
+      alert(`Failed to read QR code from image: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  function clearAttendance() {
+    setAttendance([])
+    localStorage.removeItem("attendance_simple")
+  }
+
+  async function downloadExcel(_attendance?: { student: string; time: string }[]) {
+  try {
+    const response = await fetch("/attendance_template.xlsx");
+    const buffer = await response.arrayBuffer();
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer);
+
+    const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+
+    const normalizeName = (s: any) =>
+      (s || "")
+        .toString()
+        .trim()
+        .replace(/\s+/g, " ")
+        .toLowerCase();
+
+    // 🔹 Load attendance history from localStorage (persistent)
+    let history: Record<string, string[]> = {};
+    try {
+      history = JSON.parse(localStorage.getItem("attendance_history") || "{}");
+    } catch {}
+
+    // 🔹 Build attendanceByStudentMonth from full history
+    const attendanceByStudentMonth: Record<string, Record<string, Set<number>>> = {};
+    Object.keys(history).forEach((dateStr) => {
+      const dateObj = parseLocalDateFromYMD(dateStr);
+      const month = monthNames[dateObj.getMonth()];
+      const day = dateObj.getDate();
+
+      history[dateStr].forEach((student) => {
+        const key = normalizeName(student);
+        if (!attendanceByStudentMonth[key]) attendanceByStudentMonth[key] = {};
+        if (!attendanceByStudentMonth[key][month]) attendanceByStudentMonth[key][month] = new Set<number>();
+        attendanceByStudentMonth[key][month].add(day);
+      });
+    });
+
+    // 🔹 Get registration data
+    let registrations: { student: string; sex: string; lrn: string; parent: string; guardian: string }[] = [];
+    try {
+      const regRaw = localStorage.getItem("registrations");
+      if (regRaw) registrations = JSON.parse(regRaw);
+    } catch {}
+
+    // 🔹 For each month, update worksheet
+    monthNames.forEach((month) => {
+      const worksheet = workbook.getWorksheet(month);
+      if (!worksheet) return;
+
+      const males = registrations.filter(r => r.sex === "Male");
+      const females = registrations.filter(r => r.sex === "Female");
+
+      // Pre-clear merges and fills on date columns for male/female ranges to avoid template overrides
+      const dateHeaderRow = worksheet.getRow(10);
+      const dateCols: number[] = [];
+      dateHeaderRow.eachCell((cell, colNumber) => {
+        if (typeof cell.value === 'number') dateCols.push(colNumber);
+      });
+      // Clear merges/fills for a reasonable block of rows where students exist
+      const clearRows = [13, 13 + Math.max(200, males.length), 64, 64 + Math.max(200, females.length)];
+      for (const col of dateCols) {
+        for (let r = 13; r < 13 + Math.max(200, males.length); r++) {
+          try {
+            const c = worksheet.getRow(r).getCell(col);
+            if (c.master) c.unmerge?.();
+            (c as any).fill = undefined;
+            (c as any).border = undefined;
+          } catch {}
+        }
+        for (let r = 64; r < 64 + Math.max(200, females.length); r++) {
+          try {
+            const c = worksheet.getRow(r).getCell(col);
+            if (c.master) c.unmerge?.();
+            (c as any).fill = undefined;
+            (c as any).border = undefined;
+          } catch {}
+        }
+      }
+
+      // Prepare a 51x43 px green square image and add to workbook (for present markers)
+      let greenImageId: number | null = null;
+      try {
+        // Create canvas and draw green rectangle
+        const canvas = document.createElement('canvas');
+        canvas.width = 51; // px
+        canvas.height = 43; // px
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#00B050';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          // Convert to ArrayBuffer via blob
+          const dataUrl = canvas.toDataURL('image/png');
+          // decode base64
+          const base64 = dataUrl.split(',')[1];
+          const binary = atob(base64);
+          const len = binary.length;
+          const bytes = new Uint8Array(len);
+          for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+          greenImageId = workbook.addImage({ buffer: bytes.buffer, extension: 'png' });
+        }
+      } catch (e) {
+        console.warn('Failed to create green image for Excel markers, will fallback to glyph.', e);
+        greenImageId = null;
+      }
+
+      // Prepare a dashed black diagonal PNG to overlay each attendance cell (ensures visibility over template)
+      let diagImageId: number | null = null;
+      try {
+        const dCanvas = document.createElement('canvas');
+        // Size chosen to roughly match cell drawing area; adjust if needed
+        dCanvas.width = 51;
+        dCanvas.height = 43;
+        const dCtx = dCanvas.getContext('2d');
+        if (dCtx) {
+          // Transparent background
+          dCtx.clearRect(0, 0, dCanvas.width, dCanvas.height);
+          dCtx.strokeStyle = '#000000';
+          dCtx.lineWidth = 2;
+          dCtx.setLineDash([6, 4]);
+          dCtx.beginPath();
+          dCtx.moveTo(3, dCanvas.height - 3);
+          dCtx.lineTo(dCanvas.width - 3, 3);
+          dCtx.stroke();
+
+          const dataUrl = dCanvas.toDataURL('image/png');
+          const base64 = dataUrl.split(',')[1];
+          const binary = atob(base64);
+          const len = binary.length;
+          const bytes = new Uint8Array(len);
+          for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+          diagImageId = workbook.addImage({ buffer: bytes.buffer, extension: 'png' });
+        }
+      } catch (e) {
+        console.warn('Failed to create diagonal image for Excel markers:', e);
+        diagImageId = null;
+      }
+
+      // ---- Males (row 13)
+      let rowIdx = 13;
+      males.forEach((reg) => {
+        worksheet.getCell(`B${rowIdx}`).value = reg.student;
+        worksheet.getRow(10).eachCell((cell, colNumber) => {
+          if (typeof cell.value === "number") {
+            const day = cell.value;
+            const markCell = worksheet.getRow(rowIdx).getCell(colNumber);
+
+            const studentKey = normalizeName(reg.student);
+            const studentMonthDates = attendanceByStudentMonth[studentKey]?.[month] || new Set<number>();
+
+            // Apply fill and font first
+            if (studentMonthDates.has(day)) {
+              // ✅ Present: clear existing styles first
+              try {
+                (markCell as any).numFmt = undefined;
+                (markCell as any).font = undefined;
+                (markCell as any).alignment = { vertical: 'middle', horizontal: 'center' };
+                (markCell as any).border = undefined;
+                (markCell as any).fill = undefined;
+              } catch {}
+
+              if (greenImageId != null) {
+                // Compute cell range for adding image. ExcelJS places images by tl/br in col,row coordinates
+                // We'll place the image inside the single cell (colNumber,rowIdx). Use small offset to center.
+                // ExcelJS expects zero-based column/row for positioning in 'from'/'to' with { col, row, offsetX, offsetY }
+                try {
+                  // Use A1 range to place image inside the single cell
+                  const colLetter = worksheet.getColumn(colNumber).letter || (() => {
+                    // fallback simple conversion
+                    let n = colNumber; let s = '';
+                    while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+                    return s;
+                  })();
+                  const range = `${colLetter}${rowIdx}:${colLetter}${rowIdx}`;
+                  worksheet.addImage(greenImageId, range);
+                  // ensure cell has no text and alignment is centered
+                  markCell.value = '';
+                  markCell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
+                } catch (e) {
+                  // fallback to glyph if adding image fails
+                  const cellHeight = 21.5;
+                  const glyphFontSize = Math.max(6, Math.floor(cellHeight * 0.9));
+                  markCell.value = "\u25A0";
+                  markCell.alignment = { vertical: "middle", horizontal: "center" } as any;
+                  markCell.font = { color: { argb: "FF000000" }, size: glyphFontSize, bold: true } as any;
+                }
+              } else {
+                // Fallback: glyph method
+                const cellHeight = 21.5;
+                const glyphFontSize = Math.max(6, Math.floor(cellHeight * 0.9));
+                markCell.value = "\u25A0";
+                markCell.alignment = { vertical: "middle", horizontal: "center" } as any;
+                markCell.font = { color: { argb: "FF000000" }, size: glyphFontSize, bold: true } as any;
+              }
+            } else {
+              // ❌ Absent: mark X
+              markCell.value = "X";
+              markCell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
+              markCell.font = { color: { argb: "FF000000" }, bold: false };
+              markCell.fill = { type: "pattern", pattern: "none" };
+            }
+
+            // Now construct the border (diagonal) after fill is applied so shading remains visible.
+            // If the cell is shaded/present, force the diagonal to white so it remains visible over the green marker.
+            const diagonalBorder: any = {
+              up: true,
+              down: false,
+              style: "dashed",
+              color: { argb: studentMonthDates.has(day) ? "FFFFFFFF" : "FF000000" }
+            };
+
+            (markCell as any).border = {
+              top: { style: "thin" },
+              left: { style: "thin" },
+              bottom: { style: "thin" },
+              right: { style: "thin" },
+              diagonal: diagonalBorder
+            };
+          }
+        });
+        rowIdx++;
+      });
+
+      // ---- Females (row 64)
+      rowIdx = 64;
+      females.forEach((reg) => {
+        worksheet.getCell(`B${rowIdx}`).value = reg.student;
+        worksheet.getRow(10).eachCell((cell, colNumber) => {
+          if (typeof cell.value === "number") {
+            const day = cell.value;
+            const markCell = worksheet.getRow(rowIdx).getCell(colNumber);
+
+            const studentKey = normalizeName(reg.student);
+            const studentMonthDates = attendanceByStudentMonth[studentKey]?.[month] || new Set<number>();
+
+            // Apply fill and font first
+            if (studentMonthDates.has(day)) {
+              // ✅ Present: clear existing styles and shade green (attendance cell only)
+              try {
+                (markCell as any).numFmt = undefined;
+                (markCell as any).font = undefined;
+                (markCell as any).alignment = { vertical: 'middle', horizontal: 'center' };
+                (markCell as any).border = undefined;
+                (markCell as any).fill = undefined;
+              } catch {}
+              if (greenImageId != null) {
+                try {
+                  // Use A1 range to place image inside the single cell
+                  const colLetter = worksheet.getColumn(colNumber).letter || (() => {
+                    let n = colNumber; let s = '';
+                    while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+                    return s;
+                  })();
+                  const range = `${colLetter}${rowIdx}:${colLetter}${rowIdx}`;
+                  worksheet.addImage(greenImageId, range);
+                  markCell.value = '';
+                  markCell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
+                } catch (e) {
+                  const cellHeight = 21.5;
+                  const glyphFontSize = Math.max(6, Math.floor(cellHeight * 0.9));
+                  markCell.value = "\u25A0";
+                  markCell.alignment = { vertical: "middle", horizontal: "center" } as any;
+                  markCell.font = { color: { argb: "FF000000" }, size: glyphFontSize, bold: true } as any;
+                }
+              } else {
+                const cellHeight = 21.5;
+                const glyphFontSize = Math.max(6, Math.floor(cellHeight * 0.9));
+                markCell.value = "\u25A0";
+                markCell.alignment = { vertical: "middle", horizontal: "center" } as any;
+                markCell.font = { color: { argb: "FF000000" }, size: glyphFontSize, bold: true } as any;
+              }
+            } else {
+              markCell.value = "X";
+              markCell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
+              markCell.font = { color: { argb: "FF000000" }, bold: false };
+              markCell.fill = { type: "pattern", pattern: "none" };
+            }
+
+            // If the cell is shaded/present, force the diagonal to white so it remains visible over the green marker.
+            const diagonalBorder: any = {
+              up: true,
+              down: false,
+              style: "dashed",
+              color: { argb: studentMonthDates.has(day) ? "FFFFFFFF" : "FF000000" }
+            };
+            (markCell as any).border = {
+              top: { style: "thin" },
+              left: { style: "thin" },
+              bottom: { style: "thin" },
+              right: { style: "thin" },
+              diagonal: diagonalBorder
+            };
+          }
+        });
+        rowIdx++;
+      });
+    });
+
+    // 🔹 Download Excel
+    const blob = await workbook.xlsx.writeBuffer();
+    const url = URL.createObjectURL(new Blob([blob]));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `attendance_export.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+  } catch (err) {
+    console.error("Excel export error:", err);
+    alert("Failed to generate Excel file.");
+  }
+}
+
+
+  async function downloadPDF(attendance: { student: string; time: string }[]) {
+    try {
+      // Use pdf-lib to load the template and overlay attendance data
+      const { PDFDocument, rgb } = await import('pdf-lib')
+
+      // Fetch the template PDF
+      const templateBytes = await fetch('/attendance_template.pdf').then(res => res.arrayBuffer())
+      const pdfDoc = await PDFDocument.load(templateBytes)
+      const page = pdfDoc.getPages()[0]
+
+  // Adjusted positions to fit the LEARNER'S NAME section and attendance grid
+  // These values are estimated based on your screenshot; tweak as needed for perfect fit
+  // Match Excel export grid coordinates
+  // These values should be the same as used in your Excel export logic
+  const excelNameStartX = 70; // Excel: left margin for student names
+  const excelNameStartY = 164// Lowered by another 20 units for better alignment
+  const excelNameHeight = 13; // Excel: height per student row
+  const excelCellStartX = 208; // Excel: left margin for date cells
+  const excelCellStartY = 166// Excel: top margin for date cells
+  const excelCellWidth = 15;// Excel: width of each date cell
+  const excelCellHeight = 13; // Excel: height per student row
+
+  // PDF-lib uses bottom-left origin, so invert Y
+  const pdfHeight = page.getHeight();
+
+      // Get attendance data
+      const attendanceByStudent = new Map<string, Set<number>>()
+      attendance.forEach((entry) => {
+        const datePart = entry.time.split(" ")[0]
+        const date = parseLocalDateFromYMD(datePart).getDate()
+        if (!attendanceByStudent.has(entry.student)) {
+          attendanceByStudent.set(entry.student, new Set<number>())
+        }
+        attendanceByStudent.get(entry.student)?.add(date)
+      })
+      const uniqueStudents = Array.from(attendanceByStudent.keys()).sort((a, b) => a.localeCompare(b))
+
+      // Dates (should match your template)
+      const dates = [1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30]
+
+      // Overlay student names in the left column (match Excel grid)
+      for (let i = 0; i < uniqueStudents.length; i++) {
+        const student = uniqueStudents[i];
+        // Excel Y: increases downward; PDF-lib Y: increases upward
+        const y = pdfHeight - (excelNameStartY + i * excelNameHeight);
+        page.drawText(student, {
+          x: excelNameStartX,
+          y: y,
+          size: 8,
+          color: rgb(0, 0, 0),
+        });
+      }
+
+      // Overlay attendance marks in the grid (match Excel grid)
+      const indicatorOffsets = [-15, -13, -12, -11, -9, -7, -5, -3, -1, 0, 1, 3, 5, 7, 9, 11, 12, 13, 15, 17, 19, 21, 23];
+        for (let i = 0; i < uniqueStudents.length; i++) {
+          const student = uniqueStudents[i];
+          const studentDates = attendanceByStudent.get(student) || new Set<number>();
+          let presentCount = 0;
+          let absentCount = 0;
+          for (let j = 0; j < dates.length; j++) {
+            const day = dates[j];
+            const x = excelCellStartX + j * excelCellWidth;
+            const y = pdfHeight - (excelCellStartY + i * excelCellHeight);
+            if (!studentDates.has(day)) {
+              const offset = indicatorOffsets[j] ?? -15;
+              // Absent: draw 'X' in cell
+              page.drawText('X', {
+                x: x + offset,
+                y: y + (excelCellHeight / 2) - 4,
+                size: 8,
+                color: rgb(0, 0, 0),
+              });
+              absentCount++;
+            } else {
+              presentCount++;
+            }
+          }
+          // Write totals to ABSENT and PRESENT columns (aligned visually)
+    const absentX = excelCellStartX + dates.length * excelCellWidth + 10; // move further left
+    const presentX = absentX + 28; // keep same spacing between columns
+          const y = pdfHeight - (excelCellStartY + i * excelCellHeight);
+          page.drawText(absentCount.toString(), {
+            x: absentX,
+            y: y + (excelCellHeight / 2) - 4,
+            size: 8,
+            color: rgb(0, 0, 0),
+          });
+          page.drawText(presentCount.toString(), {
+            x: presentX,
+            y: y + (excelCellHeight / 2) - 4,
+            size: 8,
+            color: rgb(0, 0, 0),
+          });
+      }
+
+      // Save and download the PDF
+      const pdfBytes = await pdfDoc.save()
+  const arrayBuffer = pdfBytes instanceof Uint8Array ? pdfBytes.slice().buffer : pdfBytes;
+  const blob = new Blob([arrayBuffer], { type: 'application/pdf' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'SF2_Daily_Attendance_Template.pdf'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('[v0] SF2 PDF export error:', err)
+      alert('Failed to generate SF2 PDF file.')
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 p-6 text-white">
+      <Card className="max-w-5xl w-full border-yellow-500 border-2 bg-white/10 backdrop-blur-lg text-white">
+        <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
+          <CardTitle className="text-center text-yellow-400 text-2xl">Student Attendance Dashboard</CardTitle>
+
+          <Link href="/" passHref>
+            <Button variant="secondary" className="mt-2 sm:mt-0">
+              <UserPlus className="h-4 w-4 mr-2" />
+              Register Student
+            </Button>
+          </Link>
+        </CardHeader>
+
+        <CardContent className="space-y-6">
+          <div className="flex items-center justify-between">
+            <p className="text-muted-foreground">Scan a QR code to log attendance instantly.</p>
+            <div className="flex gap-2">
+              <Dialog
+                open={open}
+                onOpenChange={(val) => {
+                  setOpen(val)
+                  if (val) {
+                    setTimeout(() => startScanner(), 300)
+                  } else {
+                    stopScanner()
+                  }
+                }}
+              >
+                <DialogTrigger asChild>
+                  <Button variant="default">
+                    <Camera className="h-4 w-4 mr-2" />
+                    Scan QR
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-md bg-white/10 backdrop-blur-lg border border-yellow-400/50">
+                  <DialogHeader>
+                    <DialogTitle className="text-yellow-400">Scan QR Code</DialogTitle>
+                  </DialogHeader>
+                  <div
+                    id="reader"
+                    className="w-full h-64 bg-black/30 rounded-md flex items-center justify-center text-sm text-gray-400"
+                  >
+                    Camera feed
+                  </div>
+
+                  <div className="mt-10">
+                    <label className="flex items-center gap-2 cursor-pointer text-yellow-400 hover:underline">
+                      <Upload className="h-4 w-4" />
+                      Upload QR Image
+                      <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+                    </label>
+                  </div>
+
+                  <DialogFooter>
+                    <Button variant="destructive" onClick={stopScanner}>
+                      Stop
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+
+              <Button variant="secondary" onClick={() => downloadExcel(attendance)}>
+                <Download className="h-4 w-4 mr-2" />
+                Download Excel
+              </Button>
+
+              {/* New PDF Export Button */}
+              <Button variant="secondary" onClick={() => downloadPDF(attendance)}>
+                <Download className="h-4 w-4 mr-2" />
+                Download PDF
+              </Button>
+
+              <Button variant="destructive" onClick={clearAttendance}>
+                <Trash2 className="h-4 w-4 mr-2" />
+                Clear
+              </Button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <Table id="attendanceTable">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-yellow-400">Student</TableHead>
+                  <TableHead className="text-yellow-400">Time In</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {attendance.map((a, i) => (
+                  <TableRow key={i}>
+                    <TableCell>{a.student}</TableCell>
+                    <TableCell>{a.time}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}

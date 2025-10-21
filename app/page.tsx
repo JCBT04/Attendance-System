@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import Link from "next/link"; // ✅ Import Next.js Link
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,60 +11,228 @@ import { QRCodeCanvas } from "qrcode.react";
 interface Registration {
   lrn: string;
   student: string;
+  sex: string;
   parent: string;
   guardian: string;
 }
 
 export default function RegisterPage() {
   const [student, setStudent] = useState("");
+  const [sex, setSex] = useState("");
   const [parent, setParent] = useState("");
   const [guardian, setGuardian] = useState("");
   const [lrn, setLrn] = useState("");
-  const [registrations, setRegistrations] = useState<Registration[]>([]);
   const [qrValue, setQrValue] = useState<string>("");
 
-  // load from localStorage
-  useEffect(() => {
+  // ✅ Initialize from localStorage immediately
+  const [registrations, setRegistrations] = useState<Registration[]>(() => {
     try {
       const saved = localStorage.getItem("registrations");
-      if (saved) setRegistrations(JSON.parse(saved));
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  function refreshRegistrations() {
+    try {
+      const saved = localStorage.getItem("registrations");
+      if (!saved) {
+        setRegistrations([]);
+        return;
+      }
+      const parsed: Registration[] = JSON.parse(saved);
+      const normalized = parsed.map((r: Registration) => ({
+        ...r,
+        student: (r.student || "").trim(),
+        parent: (r.parent || "").trim(),
+        guardian: (r.guardian || "").trim(),
+        sex: ((): string => {
+          const s = (r.sex || "").toString().trim().toLowerCase();
+          if (s.startsWith("m")) return "Male";
+          if (s.startsWith("f")) return "Female";
+          return r.sex || "";
+        })(),
+      }));
+      normalized.sort((a, b) => a.student.localeCompare(b.student));
+      setRegistrations(normalized);
     } catch (e) {
       console.error("Error loading registrations", e);
+      setRegistrations([]);
     }
+  }
+
+  useEffect(() => {
+    refreshRegistrations(); // refresh on mount
+    const handleFocus = () => refreshRegistrations();
+    window.addEventListener("focus", handleFocus);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+    };
   }, []);
 
-  // persist to localStorage
+  // Persist to localStorage whenever registrations change
   useEffect(() => {
-    localStorage.setItem("registrations", JSON.stringify(registrations));
+    try {
+      localStorage.setItem("registrations", JSON.stringify(registrations));
+    } catch (e) {
+      console.error("Failed to persist registrations", e);
+    }
   }, [registrations]);
 
-  const generateQR = () => {
-    if (!student || !parent || !guardian || !lrn) {
-      alert("Please fill all fields.");
-      return;
-    }
+//   const generateQR = () => {
+//     if (!student || !sex || !parent || !guardian || !lrn) {
+//       alert("Please fill all fields.");
+//       return;
+//     }
+//     const data: Registration = {
+//       lrn: lrn.trim(),
+//       student: student.trim(),
+//       sex: sex,
+//       parent: parent.trim(),
+//       guardian: guardian.trim(),
+//     };
+//     const payload = JSON.stringify(data);
+//     setQrValue(payload);
+//     setRegistrations((prev) => {
+//       const next = [...prev, data];
+//       next.sort((a, b) => a.student.localeCompare(b.student));
+//       try {
+//         localStorage.setItem("registrations", JSON.stringify(next));
+//       } catch (e) {
+//         console.error("Failed to persist registrations immediately", e);
+//       }
+//       return next;
+//     });
+//     setStudent("");
+//     setSex("");
+//     setParent("");
+//     setGuardian("");
+//     setLrn("");
+//     alert("QR generated and registration saved.");
+//   };
 
-    const data: Registration = { lrn, student, parent, guardian };
-    const payload = JSON.stringify(data);
+const generateQR = async () => {
+  if (!student || !sex || !parent || !guardian || !lrn) {
+    alert("Please fill all fields.");
+    return;
+  }
 
-    setQrValue(payload);
-    setRegistrations((prev) => [...prev, data]);
-    alert("QR generated and registration saved.");
+  const data: Registration = {
+    lrn: lrn.trim(),
+    student: student.trim(),
+    sex,
+    parent: parent.trim(),
+    guardian: guardian.trim(),
   };
 
-  const saveManual = () => {
-    if (!student || !parent || !guardian || !lrn) {
-      alert("Please fill all fields.");
-      return;
+  try {
+    const response = await fetch("http://localhost:8000/api/registrations/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+
+    if (response.ok) {
+      const payload = JSON.stringify(data);
+      setQrValue(payload);
+      setRegistrations((prev) => {
+        const next = [...prev, data].sort((a, b) => a.student.localeCompare(b.student));
+        localStorage.setItem("registrations", JSON.stringify(next));
+        return next;
+      });
+      setStudent("");
+      setSex("");
+      setParent("");
+      setGuardian("");
+      setLrn("");
+      alert("QR generated and registration saved to backend!");
+    } else {
+      const result = await response.json();
+      alert("Error: " + (result.error || "Failed to register."));
     }
-    setRegistrations((prev) => [...prev, { lrn, student, parent, guardian }]);
-    alert("Registration saved.");
+  } catch (error) {
+    console.error("Backend connection error:", error);
+    alert("Unable to connect to backend.");
+  }
+};
+
+
+//   const saveManual = () => {
+//     if (!student || !sex || !parent || !guardian || !lrn) {
+//       alert("Please fill all fields.");
+//       return;
+//     }
+//     setRegistrations((prev) => {
+//       const entry: Registration = {
+//         lrn: lrn.trim(),
+//         student: student.trim(),
+//         sex: sex,
+//         parent: parent.trim(),
+//         guardian: guardian.trim(),
+//       };
+//       const next = [...prev, entry];
+//       next.sort((a, b) => a.student.localeCompare(b.student));
+//       try {
+//         localStorage.setItem("registrations", JSON.stringify(next));
+//       } catch (e) {
+//         console.error("Failed to persist registrations immediately", e);
+//       }
+//       return next;
+//     });
+//     setStudent("");
+//     setSex("");
+//     setParent("");
+//     setGuardian("");
+//     setLrn("");
+//     alert("Registration saved.");
+//   };
+
+const saveManual = async () => {
+  if (!student || !sex || !parent || !guardian || !lrn) {
+    alert("Please fill all fields.");
+    return;
+  }
+
+  const entry: Registration = {
+    lrn: lrn.trim(),
+    student: student.trim(),
+    sex,
+    parent: parent.trim(),
+    guardian: guardian.trim(),
   };
+
+  try {
+    const response = await fetch("http://localhost:8000/api/registrations/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(entry),
+    });
+
+    if (response.ok) {
+      alert("Student registered successfully!");
+      setRegistrations((prev) => {
+        const next = [...prev, entry].sort((a, b) => a.student.localeCompare(b.student));
+        localStorage.setItem("registrations", JSON.stringify(next));
+        return next;
+      });
+      setStudent("");
+      setSex("");
+      setParent("");
+      setGuardian("");
+      setLrn("");
+    } else {
+      const data = await response.json();
+      alert("Error: " + (data.error || "Failed to register."));
+    }
+  } catch (error) {
+    console.error("Backend connection error:", error);
+    alert("Unable to connect to backend.");
+  }
+};
 
   const downloadQR = () => {
-    const canvas = document.querySelector(
-      "canvas"
-    ) as HTMLCanvasElement | null;
+    const canvas = document.querySelector("canvas") as HTMLCanvasElement | null;
     if (!canvas) {
       alert("Generate a QR first.");
       return;
@@ -76,15 +244,97 @@ export default function RegisterPage() {
     link.click();
   };
 
-  const downloadAll = () => {
-    if (!registrations.length) {
-      alert("No registrations yet.");
+//   const downloadAll = () => {
+//     // Always pull fresh data from localStorage
+//     const raw = localStorage.getItem("registrations");
+//     if (!raw) {
+//       alert("No registrations yet.");
+//       return;
+//     }
+//     let parsed: Registration[];
+//     try {
+//       parsed = JSON.parse(raw);
+//     } catch {
+//       alert("No registrations yet.");
+//       return;
+//     }
+//     if (!parsed.length) {
+//       alert("No registrations yet.");
+//       return;
+//     }
+
+//     const sorted = parsed.slice().sort((a, b) => a.student.localeCompare(b.student));
+//     let csv = "LRN,Student Name,Sex,Parent Name,Guardian Name\n";
+//     sorted.forEach((r) => {
+//       const lrnCell = r.lrn ?? "";
+//       const studentCell = (r.student ?? "").replace(/"/g, '""');
+//       const sexCell = r.sex ?? "";
+//       const parentCell = (r.parent ?? "").replace(/"/g, '""');
+//       const guardianCell = (r.guardian ?? "").replace(/"/g, '""');
+//       csv += `${lrnCell},"${studentCell}","${sexCell}","${parentCell}","${guardianCell}"\n`;
+//     });
+
+//     const males = sorted.filter((r) => (r.sex || "").toLowerCase().startsWith("m"));
+//     const females = sorted.filter((r) => (r.sex || "").toLowerCase().startsWith("f"));
+
+//     csv += "\n--- Male Students ---\n";
+//     males.forEach((r, i) => {
+//       csv += `${i + 1}. ${r.student}\n`;
+//     });
+
+//     csv += "\n--- Female Students ---\n";
+//     females.forEach((r, i) => {
+//       csv += `${i + 1}. ${r.student}\n`;
+//     });
+
+//     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+//     const url = URL.createObjectURL(blob);
+//     const a = document.createElement("a");
+//     a.href = url;
+//     a.download = `registrations_${new Date().toISOString().split("T")[0]}.csv`;
+//     a.click();
+//     URL.revokeObjectURL(url);
+//   };
+
+const downloadAll = async () => {
+  try {
+    const response = await fetch("http://localhost:8000/api/registrations/");
+    if (!response.ok) {
+      alert("Failed to fetch registrations from backend.");
       return;
     }
-    let csv = "LRN,Student Name,Parent Name,Guardian Name\n";
-    registrations.forEach((r) => {
-      csv += `${r.lrn},"${r.student}","${r.parent}","${r.guardian}"\n`;
+
+    const data: Registration[] = await response.json();
+    if (!data.length) {
+      alert("No registrations found.");
+      return;
+    }
+
+    const sorted = data.slice().sort((a, b) => a.student.localeCompare(b.student));
+
+    let csv = "LRN,Student Name,Sex,Parent Name,Guardian Name\n";
+    sorted.forEach((r) => {
+      const lrnCell = r.lrn ?? "";
+      const studentCell = (r.student ?? "").replace(/"/g, '""');
+      const sexCell = r.sex ?? "";
+      const parentCell = (r.parent ?? "").replace(/"/g, '""');
+      const guardianCell = (r.guardian ?? "").replace(/"/g, '""');
+      csv += `${lrnCell},"${studentCell}","${sexCell}","${parentCell}","${guardianCell}"\n`;
     });
+
+    const males = sorted.filter((r) => (r.sex || "").toLowerCase().startsWith("m"));
+    const females = sorted.filter((r) => (r.sex || "").toLowerCase().startsWith("f"));
+
+    csv += "\n--- Male Students ---\n";
+    males.forEach((r, i) => {
+      csv += `${i + 1}. ${r.student}\n`;
+    });
+
+    csv += "\n--- Female Students ---\n";
+    females.forEach((r, i) => {
+      csv += `${i + 1}. ${r.student}\n`;
+    });
+
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -92,15 +342,43 @@ export default function RegisterPage() {
     a.download = `registrations_${new Date().toISOString().split("T")[0]}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  };
+  } catch (error) {
+    console.error("Error downloading CSV:", error);
+    alert("Unable to connect to backend.");
+  }
+};
 
-  const clearAll = () => {
-    if (confirm("Are you sure you want to clear all registrations?")) {
+//   const clearAll = () => {
+//     if (confirm("Are you sure you want to clear all registrations?")) {
+//       setRegistrations([]);
+//       localStorage.removeItem("registrations");
+//       setQrValue("");
+//     }
+//   };
+
+const clearAll = async () => {
+  if (!window.confirm("Are you sure you want to delete all registrations from the backend?")) {
+    return;
+  }
+
+  try {
+    const response = await fetch("http://localhost:8000/api/registrations/clear_all/", {
+      method: "DELETE",
+    });
+
+    if (response.ok) {
+      alert("All registrations deleted successfully!");
       setRegistrations([]);
       localStorage.removeItem("registrations");
-      setQrValue("");
+    } else {
+      alert("Failed to clear registrations on backend.");
     }
-  };
+  } catch (error) {
+    console.error("Error clearing registrations:", error);
+    alert("Unable to connect to backend.");
+  }
+};
+
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 p-6 text-white">
@@ -109,7 +387,6 @@ export default function RegisterPage() {
           <CardTitle className="text-center text-yellow-400 text-2xl">
             Student QR Code Registration
           </CardTitle>
-
           <Link href="/dashboard">
             <Button variant="secondary">
               <LayoutDashboard className="h-4 w-4 mr-2" />
@@ -138,8 +415,22 @@ export default function RegisterPage() {
 
             {/* Form Panel */}
             <div className="space-y-3">
-              <label className="block text-sm">Student Name</label>
+              <label className="block text-sm">Full Name</label>
               <Input value={student} onChange={(e) => setStudent(e.target.value)} />
+              <p className="text-xs text-yellow-300 mt-1">
+                Format: Last Name, First Name Middle Initial
+              </p>
+
+              <label className="block text-sm mt-2">Sex</label>
+              <select
+                value={sex}
+                onChange={(e) => setSex(e.target.value)}
+                className="w-full p-2 rounded bg-slate-900 text-white border border-yellow-400"
+              >
+                <option value="">Select...</option>
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+              </select>
 
               <label className="block text-sm">Parent Name</label>
               <Input value={parent} onChange={(e) => setParent(e.target.value)} />
@@ -166,7 +457,7 @@ export default function RegisterPage() {
               </div>
 
               <p className="text-muted-foreground text-sm mt-3">
-                QR payload format: {"{"}"lrn":"...","student":"...","parent":"...","guardian":"..."{"}"}
+                QR payload format: {"{"}"lrn":"...","student":"Last Name, First Name Middle Initial","sex":"Male/Female","parent":"...","guardian":"..."{"}"}
               </p>
             </div>
           </div>
