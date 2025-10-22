@@ -11,235 +11,149 @@ import { Download, Camera, Trash2, Upload, UserPlus } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Html5Qrcode } from "html5-qrcode"
 import ExcelJS from "exceljs"
-import jsPDF from "jspdf"
-
 
 export default function Home() {
+  // Local UI state and refs
   const [open, setOpen] = useState(false)
   const [attendance, setAttendance] = useState<{ student: string; time: string }[]>([])
-  const [today, setToday] = useState(() => {
-    const n = new Date();
-    return n.toISOString().split("T")[0];
-  });
+  const [today, setToday] = useState(() => new Date().toISOString().split("T")[0])
   const scannerRef = useRef<Html5Qrcode | null>(null)
-
   // Backend base URL. Use NEXT_PUBLIC_API_URL if provided, otherwise default to localhost:8000
-  const API_BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+  const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "")
 
-
-  // Load attendance for today only
-
+  // Fetch today's attendance from server or fallback to localStorage
   async function fetchTodayAttendance() {
     try {
-    const res = await fetch(`${API_BASE}/api/attendance/today/`);
-      if (!res.ok) throw new Error('Failed to fetch today attendance');
-      const data = await res.json();
-      // data: [{ id, student, student_name, time }]
-      setAttendance(data.map((d: any) => ({ student: d.student_name || d.student, time: d.time })));
+      const res = await fetch(`${API_BASE}/api/attendance/today/`)
+      if (!res.ok) throw new Error("Failed to fetch today attendance")
+      const data = await res.json()
+      setAttendance(
+        (data || []).map((d: any) => ({ student: d.student_name || d.student, time: d.time })) || [],
+      )
     } catch (err) {
-      console.warn('Failed to fetch today attendance, falling back to localStorage', err);
-      // fallback to previous localStorage method
-      const raw = localStorage.getItem('attendance_simple');
-      if (raw) {
-        try {
-          const all = JSON.parse(raw) || [];
-          const todayStr = new Date().toISOString().split('T')[0];
-          setAttendance(all.filter((a: { time: string }) => (a.time || '').slice(0, 10) === todayStr));
-        } catch {
-          setAttendance([]);
-        }
-      } else {
-        setAttendance([]);
+      // fallback to localStorage recent scans
+      try {
+        const simple = JSON.parse(localStorage.getItem("attendance_simple") || "[]") as any[]
+        setAttendance((simple || []).map((s) => ({ student: s.student || s.lrn || JSON.stringify(s), time: s.time || "" })))
+      } catch {
+        setAttendance([])
       }
     }
   }
 
   useEffect(() => {
-    fetchTodayAttendance();
+    fetchTodayAttendance()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-    // Set up timer to refresh at midnight
-    const now = new Date();
-    const msToMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1).getTime() - now.getTime();
-    const midnightTimeout = setTimeout(() => {
-      setToday(new Date().toISOString().split("T")[0]);
-      fetchTodayAttendance();
-    }, msToMidnight);
-
-    // Also listen for storage changes (in case another tab adds attendance)
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'attendance_simple') fetchTodayAttendance();
-    };
-    window.addEventListener("storage", onStorage);
-
-    return () => {
-      clearTimeout(midnightTimeout);
-      window.removeEventListener("storage", onStorage);
-    };
-  }, [today]);
-
-  // Save attendance (all records, not just today)
-  useEffect(() => {
-    // Only update if attendance is not empty and the latest record is for today
-    if (attendance.length > 0) {
-      const raw = localStorage.getItem("attendance_simple");
-      let all = [];
-      try { all = JSON.parse(raw || "[]"); } catch {}
-      // Merge today's attendance with previous days
-      const todayStr = new Date().toISOString().split("T")[0];
-      const notToday = all.filter((a: { time: string }) => (a.time || "").slice(0, 10) !== todayStr);
-      localStorage.setItem("attendance_simple", JSON.stringify([...notToday, ...attendance]));
-    }
-  }, [attendance]);
-
-  function nowTime(): string {
-  const n = new Date()
-  let h = n.getHours()
-  const m = String(n.getMinutes()).padStart(2, "0")
-  const s = String(n.getSeconds()).padStart(2, "0")
-  const ampm = h >= 12 ? "PM" : "AM"
-  h = h % 12 || 12
-  // Use local date instead of UTC
-  const year = n.getFullYear()
-  const month = String(n.getMonth() + 1).padStart(2, "0")
-  const day = String(n.getDate()).padStart(2, "0")
-  const date = `${year}-${month}-${day}`
-  return `${date} ${String(h).padStart(2, "0")}:${m}:${s} ${ampm}`
-  }
-
-//   function addAttendance(student: string) {
-//     const now = new Date();
-//     const dateStr = now.toISOString().split("T")[0]; // YYYY-MM-DD only
-//     setAttendance((prev) => {
-//       // Only add if not already present for today
-//       const todayStr = dateStr;
-//       const already = prev.some((a) => a.student === student && (a.time || "").slice(0, 10) === todayStr);
-//       if (already) return prev;
-//       const updated = [...prev, { student, time: nowTime() }];
-//       // Do not update localStorage here, let useEffect handle it
-//       return updated;
-//     });
-
-//     // Update persistent history (by date)
-//     let history: Record<string, string[]> = {};
-//     try {
-//       history = JSON.parse(localStorage.getItem("attendance_history") || "{}");
-//     } catch {}
-//     if (!history[dateStr]) history[dateStr] = [];
-//     if (!history[dateStr].includes(student)) {
-//       history[dateStr].push(student);
-//     }
-//     localStorage.setItem("attendance_history", JSON.stringify(history));
-//   }
-
-// The backend expects { lrn } in POST /api/attendance/
-async function addAttendance(lrnOrStudent: string) {
-  try {
-    let lrn = lrnOrStudent;
-
-    // Heuristic: if the scanned value looks like a name (contains letters/spaces) instead of an LRN,
-    // try to find the registration by student name.
-    const looksLikeName = /[a-zA-Z]/.test(lrnOrStudent) && /\s/.test(lrnOrStudent);
-    if (looksLikeName) {
-      try {
-        const regRes = await fetch(`${API_BASE}/api/registrations/`);
-        if (regRes.ok) {
-          const regs = await regRes.json();
-          const normalized = (lrnOrStudent || '').toString().trim().toLowerCase();
-          const found = regs.find((r: any) => (r.student || '').toString().trim().toLowerCase() === normalized);
-          if (found && found.lrn) {
-            lrn = found.lrn;
-          } else {
-            throw new Error('No registration found for scanned name.');
-          }
-        } else {
-          throw new Error('Failed to fetch registrations for name lookup');
-        }
-      } catch (lookupErr) {
-        console.error('Lookup by name failed:', lookupErr);
-        alert('Could not resolve scanned name to a registered LRN. Ensure QR contains the student LRN or register the student first.');
-        return;
-      }
-    }
-
-    const payload: Record<string, string> = { lrn };
-    const res = await fetch(`${API_BASE}/api/attendance/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      let msg: string | null = null;
-      try {
-        const body = await res.json();
-        if (body && (body.error || body.detail || body.message)) {
-          msg = body.error || body.detail || body.message || JSON.stringify(body);
-        } else {
-          msg = JSON.stringify(body);
-        }
-      } catch (_) {
-        try {
-          msg = await res.text();
-        } catch (__)
-        {
-          msg = null;
-        }
-      }
-      console.error('Attendance POST failed', { status: res.status, statusText: res.statusText, message: msg });
-      throw new Error(msg || 'Failed to add attendance');
-    }
-    // success: try to persist to local attendance_history so exports see the new entry even if backend/listing lags
+  async function clearAttendance() {
     try {
-      let body: any = null;
-      try { body = await res.json(); } catch (_) { body = null; }
+      const choice = window.prompt("Type 'today' to clear today's attendance, or 'all' to clear all attendance records.", 'today')
+      if (!choice) return
+      const scope = choice.toLowerCase() === 'all' ? 'all' : 'today'
+      const res = await fetch(`${API_BASE}/api/attendance/clear/?scope=${scope}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const body = await res.text()
+        throw new Error(body || 'Failed to clear')
+      }
 
-      const returnedName = (body && (body.student_name || body.student)) ? (body.student_name || body.student) : null;
-      let studentToRecord = returnedName || lrn;
+      // Clear in-memory UI
+      setAttendance([])
 
-      // If we only have an LRN, try to resolve it to the registered student name so exported sheets match registrations
-      if (!returnedName && studentToRecord) {
-        try {
-          let regs: any[] = [];
+      // Also clear localStorage records so exports do not include stale entries
+      try {
+        if (scope === 'all') {
+          localStorage.removeItem('attendance_simple')
+          localStorage.removeItem('attendance_history')
+        } else {
+          // scope === 'today' -> remove today's entries from attendance_history and attendance_simple
           try {
-            const regRes = await fetch(`${API_BASE}/api/registrations/`);
-            if (regRes.ok) regs = await regRes.json();
-            else {
-              const regRaw = localStorage.getItem('registrations');
-              if (regRaw) regs = JSON.parse(regRaw);
+            const todayKey = new Date().toISOString().split('T')[0]
+            // attendance_simple likely contains recent scans with full time strings
+            const simpleRaw = localStorage.getItem('attendance_simple')
+            if (simpleRaw) {
+              const simple = JSON.parse(simpleRaw || '[]') as any[]
+              const filtered = (simple || []).filter((s) => {
+                const t = (s && s.time) ? (s.time.toString()) : ''
+                return !(t.split(' ')[0] === todayKey)
+              })
+              if (filtered.length) localStorage.setItem('attendance_simple', JSON.stringify(filtered))
+              else localStorage.removeItem('attendance_simple')
+            }
+
+            const histRaw = localStorage.getItem('attendance_history')
+            if (histRaw) {
+              const hist = JSON.parse(histRaw || '{}') as Record<string, any[]>
+              // Remove the today's key
+              delete hist[todayKey]
+              // If object is empty, remove the key entirely
+              if (Object.keys(hist).length === 0) localStorage.removeItem('attendance_history')
+              else localStorage.setItem('attendance_history', JSON.stringify(hist))
             }
           } catch (e) {
-            const regRaw = localStorage.getItem('registrations');
-            if (regRaw) regs = JSON.parse(regRaw);
+            // ignore localStorage trimming errors
           }
-          if (Array.isArray(regs) && regs.length) {
-            const found = regs.find(r => (r.lrn || '').toString() === (lrn || '').toString());
-            if (found && found.student) studentToRecord = found.student;
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      alert(scope === 'all' ? "All attendance cleared." : "Today's attendance cleared.")
+    } catch (err) {
+      console.error(err)
+      alert(`Failed to clear attendance: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  // Add attendance by sending LRN or student identifier to backend and refresh
+  async function addAttendance(lrnOrStudent: string) {
+    try {
+      let lrn = lrnOrStudent
+      const looksLikeName = /[a-zA-Z]/.test(lrnOrStudent) && /\s/.test(lrnOrStudent)
+      if (looksLikeName) {
+        try {
+          const regRes = await fetch(`${API_BASE}/api/registrations/`)
+          if (regRes.ok) {
+            const regs = await regRes.json()
+            const normalized = (lrnOrStudent || "").toString().trim().toLowerCase()
+            const found = regs.find((r: any) => (r.student || "").toString().trim().toLowerCase() === normalized)
+            if (found && found.lrn) {
+              lrn = found.lrn
+            } else {
+              alert("Scanned name not found in registrations. Please register the student first or include LRN in the QR.")
+              return
+            }
           }
-        } catch (e) {
-          // ignore lookup failures
+        } catch (lookupErr) {
+          console.error("Lookup by name failed:", lookupErr)
+          alert("Could not resolve scanned name to a registered LRN. Ensure QR contains the student LRN or register the student first.")
+          return
         }
       }
 
-      const now = new Date();
-      const dateStr = now.toISOString().split('T')[0];
-      let history: Record<string, string[]> = {};
-      try { history = JSON.parse(localStorage.getItem('attendance_history') || '{}'); } catch {}
-      if (!history[dateStr]) history[dateStr] = [];
-      if (!history[dateStr].includes(studentToRecord)) {
-        history[dateStr].push(studentToRecord);
-        try { localStorage.setItem('attendance_history', JSON.stringify(history)); } catch (e) { console.warn('Failed to persist attendance_history locally', e); }
+      const payload = { lrn }
+      const res = await fetch(`${API_BASE}/api/attendance/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) {
+        let msg = null
+        try {
+          const body = await res.json()
+          msg = body && (body.error || body.detail || body.message)
+        } catch {}
+        alert(msg || "Failed to record attendance")
+        return
       }
-    } catch (e) {
-      console.warn('Failed to update local attendance history after POST', e);
-    }
 
-    // success: re-fetch today's attendance
-    await fetchTodayAttendance();
-  } catch (err: any) {
-    console.error('Add attendance error:', err);
-    const message = (err && err.message) ? err.message : String(err);
-    alert(`Failed to log attendance: ${message}`);
+      // Refresh list
+      await fetchTodayAttendance()
+    } catch (err) {
+      console.error("Failed to add attendance:", err)
+      alert("Failed to add attendance")
+    }
   }
-}
 
 
   function parseStudentFromQr(qrMessage: string): string | null {
@@ -359,24 +273,10 @@ async function addAttendance(lrnOrStudent: string) {
       alert(`Failed to read QR code from image: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
-
-//   function clearAttendance() {
-//     setAttendance([])
-//     localStorage.removeItem("attendance_simple")
-//   }
-async function clearAttendance() {
-  try {
-    const res = await fetch(`${API_BASE}/api/registrations/clear_all/`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('Failed to clear');
-    setAttendance([]);
-  } catch (err) {
-    console.error(err);
-    alert('Failed to clear attendance');
-  }
-}
-
-
-  async function downloadExcel(_attendance?: { student: string; time: string }[], includeNames: boolean = false) {
+// removed top-level scanner/handler functions; implementations are inside the component so they can
+// access state/hooks (scannerRef, setOpen, setAttendance, API_BASE).
+// downloadExcel implementation lives inside the component below.
+async function downloadExcel(_attendance?: { student: string; time: string }[], includeNames: boolean = false) {
   try {
     const response = await fetch("/attendance_template.xlsx");
     const buffer = await response.arrayBuffer();
@@ -393,6 +293,27 @@ async function clearAttendance() {
         .replace(/\s+/g, " ")
         .toLowerCase();
 
+    // Stronger key normalizer: strip common punctuation and parentheses so variants like
+    // "Name (12345)" or "Name-12345" normalize to the same key. Also produce an LRN-only key when possible.
+    const normalizeKey = (s: any) => {
+      const str = (s || "").toString();
+      const l = str.trim();
+      // LRN candidate: digits only
+      const digits = (l.match(/\d+/g) || []).join('');
+      const lrnKey = digits ? digits : null;
+      // Remove parentheses and punctuation, keep letters/numbers and spaces
+      let cleaned = l.replace(/[()\[\]{}]|[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+      // Heuristic: only treat cleaned as a matching key if it's reasonably specific
+      // (at least 4 chars and contains letters or at least 4 digits). This reduces false positives
+      // where very short or generic cleaned strings match multiple students.
+      const letters = (cleaned.match(/[a-z]/gi) || []).length;
+      const digitsOnly = (cleaned.match(/\d/g) || []).length;
+      if (cleaned.length < 4 || (letters === 0 && digitsOnly < 4)) {
+        cleaned = '';
+      }
+      return { raw: l.toLowerCase(), cleaned, lrnKey };
+    };
+
   // 🔹 Load attendance history from localStorage (persistent)
   // Accept arrays of strings or arrays of objects ({ student, lrn })
   let history: Record<string, any[]> = {};
@@ -402,7 +323,25 @@ async function clearAttendance() {
 
     // 🔹 Build attendanceByStudentMonth from full history
     // Be flexible: history keys may be 'YYYY-MM-DD' or full ISO datetimes; entries may be strings or objects { student, lrn }
-    const attendanceByStudentMonth: Record<string, Record<string, Set<number>>> = {};
+    const attendanceByStudentMonth: Record<string, Record<string, Record<number, number>>> = {};
+    const AM_FLAG = 1;
+    const PM_FLAG = 2;
+    const addPresence = (key: string, month: string, day: number, hour: number | null) => {
+      if (!key) return;
+      if (!attendanceByStudentMonth[key]) attendanceByStudentMonth[key] = {};
+      if (!attendanceByStudentMonth[key][month]) attendanceByStudentMonth[key][month] = {};
+      const prev = attendanceByStudentMonth[key][month][day] || 0;
+      let flag = 0;
+      if (hour === null) {
+        // unknown time -> mark as both to be safe
+        flag = AM_FLAG | PM_FLAG;
+      } else if (hour < 12) {
+        flag = AM_FLAG;
+      } else {
+        flag = PM_FLAG;
+      }
+      attendanceByStudentMonth[key][month][day] = prev | flag;
+    };
     Object.keys(history).forEach((dateKey) => {
       // Try to produce a Date for the key.
       let dateObj: Date | null = null;
@@ -424,6 +363,20 @@ async function clearAttendance() {
 
       const entries = Array.isArray(history[dateKey]) ? history[dateKey] : [];
       entries.forEach((entry) => {
+          let entryHour: number | null = null;
+          // Try to extract hour if time provided
+          const tval = (entry.time || entry.timestamp || entry.created || '');
+          if (tval) {
+            try {
+              const tstr = tval.toString();
+              const isoMatch = tstr.match(/\d{4}-\d{2}-\d{2}T(\d{2}):/);
+              if (isoMatch) entryHour = Number(isoMatch[1]);
+              else {
+                const parsed = new Date(tstr);
+                if (!isNaN(parsed.getTime())) entryHour = parsed.getHours();
+              }
+            } catch {}
+          }
         let studentName: string | null = null;
         let entryLrn: string | null = null;
         if (typeof entry === 'string') {
@@ -435,25 +388,102 @@ async function clearAttendance() {
         }
 
         const candidates: string[] = [];
-        if (studentName) candidates.push(normalizeName(studentName));
-        if (entryLrn) candidates.push(normalizeName(entryLrn));
+        if (studentName) {
+          const nk = normalizeKey(studentName);
+          if (nk.lrnKey) candidates.push(nk.lrnKey);
+          candidates.push(normalizeName(studentName));
+        }
+        if (entryLrn) {
+          const nk = normalizeKey(entryLrn);
+          if (nk.lrnKey) candidates.push(nk.lrnKey);
+          candidates.push(normalizeName(entryLrn));
+        }
 
         // Also accept raw object-to-string fallback
         if (!studentName && !entryLrn) {
           try {
             const asStr = JSON.stringify(entry);
-            if (asStr) candidates.push(normalizeName(asStr));
+            if (asStr) {
+              // Use only LRN candidate and normalized string. Avoid fuzzy 'cleaned' key to reduce false matches.
+              const nk = normalizeKey(asStr);
+              if (nk.lrnKey) candidates.push(nk.lrnKey);
+              candidates.push(normalizeName(asStr));
+            }
           } catch {}
         }
 
+        // Register all candidate keys. Skip generic placeholders like 'unknown student' or empty strings
         candidates.forEach((key) => {
           if (!key) return;
-          if (!attendanceByStudentMonth[key]) attendanceByStudentMonth[key] = {};
-          if (!attendanceByStudentMonth[key][month]) attendanceByStudentMonth[key][month] = new Set<number>();
-          attendanceByStudentMonth[key][month].add(day);
+          const lk = (key || '').toString().trim().toLowerCase();
+          if (!lk) return;
+          if (lk === 'unknown student' || lk === 'unknown' || lk === 'n/a') return;
+          addPresence(lk, month, day, entryHour);
         });
       });
     });
+
+    // Also fetch server-side attendance records and merge them (if available)
+    try {
+      let srvRes = await fetch(`${API_BASE}/api/attendances/`);
+      if (!srvRes.ok) srvRes = await fetch(`${API_BASE}/api/attendance/`);
+      if (srvRes.ok) {
+        const srv = await srvRes.json();
+        // srv likely array of { id, student, student_name, time }
+        (srv || []).forEach((rec: any) => {
+          try {
+            const time = rec.time || rec.created || rec.timestamp || null;
+            if (!time) return;
+            const timeStr = (time || '').toString();
+            // Try to extract ISO date (YYYY-MM-DD) first
+            let dateObj: Date | null = null;
+            const isoMatch = timeStr.match(/\d{4}-\d{2}-\d{2}/);
+            if (isoMatch) {
+              dateObj = parseLocalDateFromYMD(isoMatch[0]);
+            } else {
+              // Fallback to Date parsing of common formats (e.g., 'Oct. 20, 2025, 5:08 p.m.')
+              const parsed = new Date(timeStr);
+              if (!isNaN(parsed.getTime())) dateObj = parsed;
+            }
+            if (!dateObj) return;
+            const month = monthNames[dateObj.getMonth()];
+            const day = dateObj.getDate();
+            const candidates: string[] = [];
+            const studentName = rec.student_name || rec.student || null;
+            const studentLrn = rec.student || rec.lrn || null;
+            if (studentName) {
+              const nk = normalizeKey(studentName);
+              if (nk.lrnKey) candidates.push(nk.lrnKey);
+              candidates.push(normalizeName(studentName));
+            }
+            if (studentLrn) {
+              const nk = normalizeKey(studentLrn);
+              if (nk.lrnKey) candidates.push(nk.lrnKey);
+              candidates.push(normalizeName(studentLrn));
+            }
+            // Determine hour for AM/PM
+            let recHour: number | null = null;
+            try {
+              const isoMatch2 = (time || '').toString().match(/\d{4}-\d{2}-\d{2}T(\d{2}):/);
+              if (isoMatch2) recHour = Number(isoMatch2[1]);
+              else {
+                const p = new Date(time || '');
+                if (!isNaN(p.getTime())) recHour = p.getHours();
+              }
+            } catch {}
+            candidates.forEach((rawKey) => {
+              if (!rawKey) return;
+              const key = (rawKey || '').toString().trim().toLowerCase();
+              if (!key) return;
+              if (key === 'unknown student' || key === 'unknown' || key === 'n/a') return;
+              addPresence(key, month, day, recHour);
+            });
+          } catch {}
+        });
+      }
+    } catch (e) {
+      // ignore server fetch failures
+    }
 
     // Also merge today's recent scans from attendance_simple so immediate scans are recognized
     try {
@@ -468,13 +498,40 @@ async function clearAttendance() {
             const month = monthNames[dateObj.getMonth()];
             const day = dateObj.getDate();
             const candidates: string[] = [];
-            if (s.student) candidates.push(normalizeName(s.student));
-            if (s.lrn) candidates.push(normalizeName(s.lrn));
-            if (candidates.length === 0) candidates.push(normalizeName(JSON.stringify(s)));
-            candidates.forEach((key) => {
-              if (!attendanceByStudentMonth[key]) attendanceByStudentMonth[key] = {};
-              if (!attendanceByStudentMonth[key][month]) attendanceByStudentMonth[key][month] = new Set<number>();
-              attendanceByStudentMonth[key][month].add(day);
+            if (s.student) {
+              const nk = normalizeKey(s.student);
+              if (nk.lrnKey) candidates.push(nk.lrnKey);
+              candidates.push(normalizeName(s.student));
+            }
+            if (s.lrn) {
+              const nk = normalizeKey(s.lrn);
+              if (nk.lrnKey) candidates.push(nk.lrnKey);
+              candidates.push(normalizeName(s.lrn));
+            }
+            if (candidates.length === 0) {
+              try {
+                const asStr = JSON.stringify(s);
+                const nk = normalizeKey(asStr);
+                if (nk.lrnKey) candidates.push(nk.lrnKey);
+                candidates.push(normalizeName(asStr));
+              } catch {}
+            }
+            // Determine hour from s.time
+            let sHour: number | null = null;
+            try {
+              const t = (s && s.time) ? s.time.toString() : '';
+              const m = t.match(/\d{4}-\d{2}-\d{2}T(\d{2}):/);
+              if (m) sHour = Number(m[1]);
+              else {
+                const p = new Date(t || '');
+                if (!isNaN(p.getTime())) sHour = p.getHours();
+              }
+            } catch {}
+            candidates.forEach((rawKey) => {
+              const key = (rawKey || '').toString().trim().toLowerCase();
+              if (!key) return;
+              if (key === 'unknown student' || key === 'unknown' || key === 'n/a') return;
+              addPresence(key, month, day, sHour);
             });
           } catch {}
         });
@@ -507,21 +564,56 @@ async function clearAttendance() {
       if (!worksheet) return;
 
       // Helper: normalize a header cell value to a day number (1..31) when possible.
-      // Accept numbers, numeric strings ("1", "01"), and Date objects. Also handle ExcelJS formula/result shapes.
+      // Accept numbers, numeric strings ("1", "01"), ordinal strings ("1st"), Date objects,
+      // and ExcelJS richText/text/result shapes.
       const getCellDay = (cell: any): number | null => {
         if (!cell) return null;
         const v = cell.value;
+        // direct number
         if (typeof v === 'number') return v;
+
+        // plain string (accept "1", "01", "1st", " 1 ")
         if (typeof v === 'string') {
           const s = v.trim();
-          if (/^\d+$/.test(s)) return parseInt(s, 10);
+          const m = s.match(/^(\d{1,2})/);
+          if (m) return parseInt(m[1], 10);
+          return null;
         }
+
+        // Date object
         if (v instanceof Date) return v.getDate();
-        if (v && typeof v === 'object' && (v as any).result !== undefined) {
-          const rv = (v as any).result;
-          if (typeof rv === 'number') return rv;
-          if (typeof rv === 'string' && /^\d+$/.test(rv.trim())) return parseInt(rv, 10);
-          if (rv instanceof Date) return rv.getDate();
+
+        // ExcelJS cell objects (richText/text/formula=result)
+        if (v && typeof v === 'object') {
+          try {
+            // richText (array of runs)
+            if ((v as any).richText && Array.isArray((v as any).richText)) {
+              const joined = (v as any).richText.map((r: any) => r && r.text ? r.text : '').join('').trim();
+              const m = joined.match(/^(\d{1,2})/);
+              if (m) return parseInt(m[1], 10);
+            }
+
+            // text property
+            if ((v as any).text) {
+              const s = (v as any).text.toString().trim();
+              const m = s.match(/^(\d{1,2})/);
+              if (m) return parseInt(m[1], 10);
+            }
+
+            // formula/result shapes
+            if ((v as any).result !== undefined) {
+              const rv = (v as any).result;
+              if (typeof rv === 'number') return rv;
+              if (typeof rv === 'string') {
+                const s = rv.trim();
+                const m = s.match(/^(\d{1,2})/);
+                if (m) return parseInt(m[1], 10);
+              }
+              if (rv instanceof Date) return rv.getDate();
+            }
+          } catch (e) {
+            // ignore parse errors
+          }
         }
         return null;
       };
@@ -558,47 +650,10 @@ async function clearAttendance() {
         }
       }
 
-      // Prepare a 51x43 px green square image and add to workbook (for present markers)
-      let greenImageId: number | null = null;
-      try {
-        // Create canvas and draw a hollow (stroked) green square to match requested appearance
-        const canvas = document.createElement('canvas');
-        canvas.width = 51; // px
-        canvas.height = 43; // px
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          // Transparent background
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          // Draw stroked rounded rectangle
-          const pad = 6;
-          const w = canvas.width - pad * 2;
-          const h = canvas.height - pad * 2;
-          const r = 4;
-          ctx.strokeStyle = '#00B050';
-          ctx.lineWidth = 3;
-          // rounded rect path
-          ctx.beginPath();
-          ctx.moveTo(pad + r, pad);
-          ctx.arcTo(pad + w, pad, pad + w, pad + r, r);
-          ctx.arcTo(pad + w, pad + h, pad + w - r, pad + h, r);
-          ctx.arcTo(pad, pad + h, pad, pad + h - r, r);
-          ctx.arcTo(pad, pad, pad + r, pad, r);
-          ctx.closePath();
-          ctx.stroke();
-
-          // Convert to ArrayBuffer via dataURL
-          const dataUrl = canvas.toDataURL('image/png');
-          const base64 = dataUrl.split(',')[1];
-          const binary = atob(base64);
-          const len = binary.length;
-          const bytes = new Uint8Array(len);
-          for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
-          greenImageId = workbook.addImage({ buffer: bytes.buffer, extension: 'png' });
-        }
-      } catch (e) {
-        console.warn('Failed to create green image for Excel markers, will fallback to glyph.', e);
-        greenImageId = null;
-      }
+      // No green shading: present cells will be left blank (no image overlay)
+  // Prepare triangular overlays for AM (top-right) and PM (bottom-left)
+  let amImageId: number | null = null;
+  let pmImageId: number | null = null;
 
       // Prepare a dashed black diagonal PNG to overlay each attendance cell (ensures visibility over template)
       let diagImageId: number | null = null;
@@ -632,76 +687,61 @@ async function clearAttendance() {
         diagImageId = null;
       }
 
-      // ---- Males (row 13)
+  // ---- Males (row 13)
       let rowIdx = 13;
       males.forEach((reg) => {
-        // Ensure visible label even if student name is empty
-        const visibleName = (reg.student && reg.student.toString().trim()) || (reg.lrn && reg.lrn.toString().trim()) || 'Unknown Student';
-  const nameCell = worksheet.getCell(`B${rowIdx}`);
-  if (includeNames) nameCell.value = visibleName;
+        // Derive a stable visible label, but compute matching keys from raw fields to avoid placeholder matches
+        const rawStudent = (reg.student && reg.student.toString().trim()) || '';
+        const rawLrn = (reg.lrn && reg.lrn.toString().trim()) || '';
+        const visibleName = rawStudent || rawLrn || 'Unknown Student';
+        const nameCell = worksheet.getCell(`B${rowIdx}`);
+        if (includeNames) nameCell.value = visibleName;
   // Force a readable font color and alignment so the name is visible on any template
   (nameCell as any).font = { color: { argb: 'FF000000' }, size: 10 };
         nameCell.alignment = { vertical: 'middle', horizontal: 'left' } as any;
         worksheet.getRow(10).eachCell((cell, colNumber) => {
           const day = getCellDay(cell);
           if (day != null) {
+            // Only write indicators for the current month and today's day. Leave other months/days alone.
+            const now = new Date();
+            const currentMonthName = monthNames[now.getMonth()];
+            const todayDay = now.getDate();
+            // Only operate on columns in the current month and on or before today (history up to today)
+            if (month !== currentMonthName || day > todayDay) {
+              // don't modify this cell for non-current-month columns or future days
+              return
+            }
             const markCell = worksheet.getRow(rowIdx).getCell(colNumber);
 
-            const nameKey = normalizeName(visibleName);
-            const lrnKey = normalizeName(reg.lrn);
+            const nameKey = rawStudent ? normalizeName(rawStudent) : '';
+            const keyInfo = normalizeKey(rawLrn || rawStudent || '');
+            const lrnKey = keyInfo.lrnKey;
             const studentMonthDates = new Set<number>();
-            // Merge dates stored under the student's name and under their LRN (some histories store LRN)
-            if (attendanceByStudentMonth[nameKey] && attendanceByStudentMonth[nameKey][month]) {
-              attendanceByStudentMonth[nameKey][month].forEach((d: number) => studentMonthDates.add(d));
-            }
+            // Prefer LRN-only match, then cleaned combined key (only if it contains name or LRN), then raw normalized name
             if (lrnKey && attendanceByStudentMonth[lrnKey] && attendanceByStudentMonth[lrnKey][month]) {
-              attendanceByStudentMonth[lrnKey][month].forEach((d: number) => studentMonthDates.add(d));
+              Object.keys(attendanceByStudentMonth[lrnKey][month]).forEach((k) => {
+                const num = Number(k);
+                if (!isNaN(num)) studentMonthDates.add(num);
+              });
+            }
+            if (nameKey && attendanceByStudentMonth[nameKey] && attendanceByStudentMonth[nameKey][month]) {
+              Object.keys(attendanceByStudentMonth[nameKey][month]).forEach((k) => {
+                const num = Number(k);
+                if (!isNaN(num)) studentMonthDates.add(num);
+              });
             }
 
+            // Determine present condition for today (skip accidental marking of day 1)
+            const presentCondition = studentMonthDates.has(day) && day !== 1;
             // Apply fill and font first
-            if (studentMonthDates.has(day)) {
-              // ✅ Present: clear existing styles first
+            if (presentCondition) {
+              // ✅ Present: leave blank (no marker) but ensure alignment and clear fill/font
               try {
-                (markCell as any).numFmt = undefined;
+                markCell.value = "";
+                markCell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
                 (markCell as any).font = undefined;
-                (markCell as any).alignment = { vertical: 'middle', horizontal: 'center' };
-                (markCell as any).border = undefined;
                 (markCell as any).fill = undefined;
               } catch {}
-
-              if (greenImageId != null) {
-                // Compute cell range for adding image. ExcelJS places images by tl/br in col,row coordinates
-                // We'll place the image inside the single cell (colNumber,rowIdx). Use small offset to center.
-                // ExcelJS expects zero-based column/row for positioning in 'from'/'to' with { col, row, offsetX, offsetY }
-                try {
-                  // Use A1 range to place image inside the single cell
-                  const colLetter = worksheet.getColumn(colNumber).letter || (() => {
-                    // fallback simple conversion
-                    let n = colNumber; let s = '';
-                    while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
-                    return s;
-                  })();
-                  // Present: leave the logical cell blank (visual marker is the image overlay)
-                  markCell.value = "";
-                  markCell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
-                  (markCell as any).font = undefined;
-                  // Place the image using top-left / bottom-right coordinates (zero-based cols/rows)
-                  worksheet.addImage(greenImageId, {
-                    tl: { col: colNumber - 1, row: rowIdx - 1 },
-                    ext: { width: 46, height: 38 }
-                  });
-                } catch (e) {
-                  // Present fallback: leave logical cell blank. Image couldn't be added so there will be no visual marker.
-                  markCell.value = "";
-                  markCell.alignment = { vertical: "middle", horizontal: "center" } as any;
-                  (markCell as any).font = undefined;
-                }
-              } else {
-                // Fallback when image isn't available: leave the cell blank for present
-                markCell.value = "";
-                markCell.alignment = { vertical: "middle", horizontal: "center" } as any;
-                (markCell as any).font = undefined;
-              }
             } else {
               // ❌ Absent: mark X
               markCell.value = "X";
@@ -716,7 +756,7 @@ async function clearAttendance() {
               up: true,
               down: false,
               style: "dashed",
-              color: { argb: studentMonthDates.has(day) ? "FFFFFFFF" : "FF000000" }
+              color: { argb: "FF000000" }
             };
 
             (markCell as any).border = {
@@ -731,68 +771,58 @@ async function clearAttendance() {
         rowIdx++;
       });
 
-      // ---- Females (row 64)
+  // ---- Females (row 64)
       rowIdx = 64;
       females.forEach((reg) => {
-        // Ensure visible label even if student name is empty
-        const visibleName = (reg.student && reg.student.toString().trim()) || (reg.lrn && reg.lrn.toString().trim()) || 'Unknown Student';
-  const nameCell = worksheet.getCell(`B${rowIdx}`);
-  if (includeNames) nameCell.value = visibleName;
+        // Derive visible label but compute matching keys from raw fields to avoid placeholder matches
+        const rawStudent = (reg.student && reg.student.toString().trim()) || '';
+        const rawLrn = (reg.lrn && reg.lrn.toString().trim()) || '';
+        const visibleName = rawStudent || rawLrn || 'Unknown Student';
+        const nameCell = worksheet.getCell(`B${rowIdx}`);
+        if (includeNames) nameCell.value = visibleName;
         (nameCell as any).font = { color: { argb: 'FF000000' }, size: 10 };
         nameCell.alignment = { vertical: 'middle', horizontal: 'left' } as any;
         worksheet.getRow(10).eachCell((cell, colNumber) => {
           const day = getCellDay(cell);
           if (day != null) {
+            // Only write indicators for the current month and today's day. Leave other months/days alone.
+            const now = new Date();
+            const currentMonthName = monthNames[now.getMonth()];
+            const todayDay = now.getDate();
+            // Only operate on columns in the current month and on or before today (history up to today)
+            if (month !== currentMonthName || day > todayDay) {
+              return
+            }
             const markCell = worksheet.getRow(rowIdx).getCell(colNumber);
 
-            const nameKey = normalizeName(visibleName);
-            const lrnKey = normalizeName(reg.lrn);
+            const nameKey = rawStudent ? normalizeName(rawStudent) : '';
+            const keyInfoF = normalizeKey(rawLrn || rawStudent || '');
+            const lrnKeyF = keyInfoF.lrnKey;
             const studentMonthDates = new Set<number>();
-            if (attendanceByStudentMonth[nameKey] && attendanceByStudentMonth[nameKey][month]) {
-              attendanceByStudentMonth[nameKey][month].forEach((d: number) => studentMonthDates.add(d));
+            if (lrnKeyF && attendanceByStudentMonth[lrnKeyF] && attendanceByStudentMonth[lrnKeyF][month]) {
+              Object.keys(attendanceByStudentMonth[lrnKeyF][month]).forEach((k) => {
+                const num = Number(k);
+                if (!isNaN(num)) studentMonthDates.add(num);
+              });
             }
-            if (lrnKey && attendanceByStudentMonth[lrnKey] && attendanceByStudentMonth[lrnKey][month]) {
-              attendanceByStudentMonth[lrnKey][month].forEach((d: number) => studentMonthDates.add(d));
+            if (nameKey && attendanceByStudentMonth[nameKey] && attendanceByStudentMonth[nameKey][month]) {
+              Object.keys(attendanceByStudentMonth[nameKey][month]).forEach((k) => {
+                const num = Number(k);
+                if (!isNaN(num)) studentMonthDates.add(num);
+              });
             }
 
+            // Determine present condition for today (skip accidental marking of day 1)
+            const presentCondition = studentMonthDates.has(day) && day !== 1;
             // Apply fill and font first
-            if (studentMonthDates.has(day)) {
-              // ✅ Present: clear existing styles and shade green (attendance cell only)
+            if (presentCondition) {
+              // ✅ Present: leave blank (no marker) but ensure alignment and clear fill/font
               try {
-                (markCell as any).numFmt = undefined;
+                markCell.value = "";
+                markCell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
                 (markCell as any).font = undefined;
-                (markCell as any).alignment = { vertical: 'middle', horizontal: 'center' };
-                (markCell as any).border = undefined;
                 (markCell as any).fill = undefined;
               } catch {}
-              if (greenImageId != null) {
-                try {
-                  // Use A1 range to place image inside the single cell
-                  const colLetter = worksheet.getColumn(colNumber).letter || (() => {
-                    let n = colNumber; let s = '';
-                    while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
-                    return s;
-                  })();
-                  // Present: leave the logical cell blank (image overlay provides visual marker)
-                  markCell.value = "";
-                  markCell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
-                  (markCell as any).font = undefined;
-                  worksheet.addImage(greenImageId, {
-                    tl: { col: colNumber - 1, row: rowIdx - 1 },
-                    ext: { width: 46, height: 38 }
-                  });
-                } catch (e) {
-                // Fallback: leave blank for present
-                markCell.value = "";
-                markCell.alignment = { vertical: "middle", horizontal: "center" } as any;
-                (markCell as any).font = undefined;
-                }
-              } else {
-                // Fallback when image isn't available: leave the cell blank for present
-                markCell.value = "";
-                markCell.alignment = { vertical: "middle", horizontal: "center" } as any;
-                (markCell as any).font = undefined;
-              }
             } else {
               markCell.value = "X";
               markCell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
@@ -805,7 +835,7 @@ async function clearAttendance() {
               up: true,
               down: false,
               style: "dashed",
-              color: { argb: studentMonthDates.has(day) ? "FFFFFFFF" : "FF000000" }
+              color: { argb: "FF000000" }
             };
             (markCell as any).border = {
               top: { style: "thin" },
@@ -906,170 +936,137 @@ async function clearAttendance() {
           });
         }
       } catch (e) { /* ignore */ }
+      // server attendance records
+      try {
+        const srvRes = await fetch(`${API_BASE}/api/attendance/`);
+        if (srvRes.ok) {
+          const srv = await srvRes.json();
+          (srv || []).forEach((rec: any) => {
+            try {
+              const time = rec.time || rec.created || rec.timestamp || '';
+              const date = (time || '').toString().split('T')[0] || '';
+              const studentVal = rec.student_name || rec.student || '';
+              const lrnVal = rec.student || rec.lrn || '';
+              scansSheet.addRow({ date, student: studentVal, lrn: lrnVal, time, source: 'server' });
+            } catch {}
+          });
+        }
+      } catch (e) {}
     } catch (e) {
       console.warn('Failed to add Scans worksheet', e);
     }
 
     const blob = await workbook.xlsx.writeBuffer();
-    const url = URL.createObjectURL(new Blob([blob]));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `attendance_export.xlsx`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+
+    // Try to upload to backend first. If backend is not available, fall back to client download.
+    const uploadUrl = `${API_BASE}/api/attendance/upload_excel/`;
+    try {
+      const form = new FormData();
+      const fileName = `attendance_export_${new Date().toISOString().replace(/[:.]/g, '-')}.xlsx`;
+      form.append('file', new Blob([blob], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), fileName);
+
+      const upRes = await fetch(uploadUrl, {
+        method: 'POST',
+        body: form,
+      });
+
+      if (upRes.ok) {
+  const body = await upRes.json();
+  // Server copy saved; trigger client download (no alert)
+        const url = URL.createObjectURL(new Blob([blob]));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = fileName || `attendance_export.xlsx`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        // If the server returned a URL, show a small non-blocking banner with a clickable link
+        if (body && body.url) {
+          try {
+            const full = body.url.startsWith('http') ? body.url : `${API_BASE.replace(/\/$/, '')}${body.url}`;
+
+            // Remove existing banner if present
+            const existing = document.getElementById('export-saved-banner');
+            if (existing) existing.remove();
+
+            const banner = document.createElement('div');
+            banner.id = 'export-saved-banner';
+            banner.style.position = 'fixed';
+            banner.style.right = '16px';
+            banner.style.bottom = '16px';
+            banner.style.background = 'rgba(0,0,0,0.8)';
+            banner.style.color = 'white';
+            banner.style.padding = '10px 14px';
+            banner.style.borderRadius = '8px';
+            banner.style.boxShadow = '0 6px 18px rgba(0,0,0,0.3)';
+            banner.style.zIndex = '9999';
+            banner.style.fontSize = '13px';
+
+            const text = document.createElement('span');
+            text.textContent = `Export saved to server:`;
+            text.style.marginRight = '8px';
+
+            const a = document.createElement('a');
+            a.href = full;
+            a.textContent = body.filename || 'Download';
+            a.style.color = '#9AE6B4';
+            a.style.textDecoration = 'underline';
+            a.target = '_blank';
+
+            const closeBtn = document.createElement('button');
+            closeBtn.textContent = '✕';
+            closeBtn.style.marginLeft = '12px';
+            closeBtn.style.background = 'transparent';
+            closeBtn.style.color = 'white';
+            closeBtn.style.border = 'none';
+            closeBtn.style.cursor = 'pointer';
+
+            closeBtn.onclick = () => banner.remove();
+
+            banner.appendChild(text);
+            banner.appendChild(a);
+            banner.appendChild(closeBtn);
+            document.body.appendChild(banner);
+
+            // Auto-hide after 15s
+            setTimeout(() => {
+              try { banner.remove(); } catch {}
+            }, 15000);
+          } catch (e) {
+            console.warn('Failed to show server download link', e);
+          }
+        }
+      } else {
+        console.warn('Upload failed, falling back to client download', upRes.status, upRes.statusText);
+        // fallback to download
+        const url = URL.createObjectURL(new Blob([blob]));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `attendance_export.xlsx`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }
+    } catch (e) {
+      console.warn('Upload attempt threw, falling back to client download', e);
+      const url = URL.createObjectURL(new Blob([blob]));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `attendance_export.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
 
   } catch (err) {
     console.error("Excel export error:", err);
     alert("Failed to generate Excel file.");
   }
 }
-
-
-
-  async function downloadPDF(_attendance: { student: string; time: string }[]) {
-    try {
-      const { PDFDocument, rgb } = await import('pdf-lib');
-      const templateBytes = await fetch('/attendance_template.pdf').then(res => res.arrayBuffer());
-      const pdfDoc = await PDFDocument.load(templateBytes);
-      const page = pdfDoc.getPages()[0];
-
-      // Excel grid positions (same as Excel export)
-      const excelNameStartX = 70;
-      const excelNameStartY = 164;
-      const excelNameHeight = 13;
-      const excelCellStartX = 208;
-      const excelCellStartY = 166;
-      const excelCellWidth = 15;
-      const excelCellHeight = 13;
-      const pdfHeight = page.getHeight();
-
-      // Month and date logic (same as Excel)
-      const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-      const dates = [1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 22, 23, 24, 25, 26, 29, 30];
-
-      // Normalize student name
-      const normalizeName = (s: any) => (s || "").toString().trim().replace(/\s+/g, " ").toLowerCase();
-
-      // Load attendance history from localStorage
-      let history: Record<string, string[]> = {};
-      try {
-        history = JSON.parse(localStorage.getItem("attendance_history") || "{}");
-      } catch {}
-
-      // Build attendanceByStudentMonth from full history
-      const attendanceByStudentMonth: Record<string, Record<string, Set<number>>> = {};
-      Object.keys(history).forEach((dateStr) => {
-        const dateObj = parseLocalDateFromYMD(dateStr);
-        const month = monthNames[dateObj.getMonth()];
-        const day = dateObj.getDate();
-        history[dateStr].forEach((student) => {
-          const key = normalizeName(student);
-          if (!attendanceByStudentMonth[key]) attendanceByStudentMonth[key] = {};
-          if (!attendanceByStudentMonth[key][month]) attendanceByStudentMonth[key][month] = new Set<number>();
-          attendanceByStudentMonth[key][month].add(day);
-        });
-      });
-
-      // Get registration data
-      let registrations: { student: string; sex: string; lrn: string; parent: string; guardian: string }[] = [];
-      try {
-        const regRes = await fetch(`${API_BASE}/api/registrations/`);
-        if (regRes.ok) {
-          registrations = await regRes.json();
-        } else {
-          const regRaw = localStorage.getItem("registrations");
-          if (regRaw) registrations = JSON.parse(regRaw);
-        }
-      } catch (e) {
-        try {
-          const regRaw = localStorage.getItem("registrations");
-          if (regRaw) registrations = JSON.parse(regRaw);
-        } catch {}
-      }
-
-  // List of all students (registered) with visible fallback
-  const allStudents = registrations.map(r => (r.student && r.student.toString().trim()) || (r.lrn && r.lrn.toString().trim()) || 'Unknown Student');
-
-      // For October (current month)
-      const month = "OCT";
-
-      // Overlay student names and attendance marks
-      for (let i = 0; i < allStudents.length; i++) {
-        const student = allStudents[i];
-        const studentKey = normalizeName(student);
-        const studentMonthDates = attendanceByStudentMonth[studentKey]?.[month] || new Set<number>();
-        // Draw student name
-        const y = pdfHeight - (excelNameStartY + i * excelNameHeight);
-        page.drawText(student, {
-          x: excelNameStartX,
-          y: y,
-          size: 8,
-          color: rgb(0, 0, 0),
-        });
-
-        // Attendance marks
-        let presentCount = 0;
-        let absentCount = 0;
-        for (let j = 0; j < dates.length; j++) {
-          const day = dates[j];
-          const x = excelCellStartX + j * excelCellWidth;
-          const markY = pdfHeight - (excelCellStartY + i * excelCellHeight);
-          if (studentMonthDates.has(day)) {
-            // Present: use 'P' (supported by WinAnsi)
-            page.drawText("P", {
-              x: x,
-              y: markY + (excelCellHeight / 2) - 4,
-              size: 8,
-              color: rgb(0, 176/255, 80/255),
-            });
-            presentCount++;
-          } else {
-            // Absent: X
-            page.drawText("X", {
-              x: x,
-              y: markY + (excelCellHeight / 2) - 4,
-              size: 8,
-              color: rgb(0, 0, 0),
-            });
-            absentCount++;
-          }
-        }
-        // Write totals to ABSENT and PRESENT columns
-        const absentX = excelCellStartX + dates.length * excelCellWidth + 10;
-        const presentX = absentX + 28;
-        page.drawText(absentCount.toString(), {
-          x: absentX,
-          y: y + (excelCellHeight / 2) - 4,
-          size: 8,
-          color: rgb(0, 0, 0),
-        });
-        page.drawText(presentCount.toString(), {
-          x: presentX,
-          y: y + (excelCellHeight / 2) - 4,
-          size: 8,
-          color: rgb(0, 0, 0),
-        });
-      }
-
-      // Save and download the PDF
-      const pdfBytes = await pdfDoc.save();
-      const arrayBuffer = pdfBytes instanceof Uint8Array ? pdfBytes.slice().buffer : pdfBytes;
-      const blob = new Blob([arrayBuffer], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'SF2_Daily_Attendance_Template.pdf';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error('[v0] SF2 PDF export error:', err);
-      alert('Failed to generate SF2 PDF file.');
-    }
-  }
+// PDF export removed per user request
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 p-6 text-white">
@@ -1138,11 +1135,7 @@ async function clearAttendance() {
                 Download Excel
               </Button>
 
-              {/* New PDF Export Button */}
-              <Button variant="secondary" onClick={() => downloadPDF(attendance)}>
-                <Download className="h-4 w-4 mr-2" />
-                Download PDF
-              </Button>
+
 
               <Button variant="destructive" onClick={clearAttendance}>
                 <Trash2 className="h-4 w-4 mr-2" />

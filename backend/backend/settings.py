@@ -111,7 +111,9 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+# Set to your local timezone so datetimes (admin/API) are shown in local time.
+# Change this if you want a different zone. Example zones: 'Asia/Manila', 'America/Los_Angeles'
+TIME_ZONE = 'Asia/Manila'
 
 USE_I18N = True
 
