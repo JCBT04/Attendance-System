@@ -14,6 +14,7 @@ interface Registration {
   sex: string;
   parent: string;
   guardian: string;
+  id?: number;
 }
 
 export default function RegisterPage() {
@@ -357,6 +358,7 @@ const downloadAll = async () => {
 //   };
 
 const clearAll = async () => {
+  // Kept for backward compatibility but not used directly in UI anymore.
   if (!window.confirm("Are you sure you want to delete all registrations from the backend?")) {
     return;
   }
@@ -376,6 +378,164 @@ const clearAll = async () => {
   } catch (error) {
     console.error("Error clearing registrations:", error);
     alert("Unable to connect to backend.");
+  }
+};
+
+// --- Edit panel state & handlers ---
+const [editing, setEditing] = useState(false);
+const [groupedRegs, setGroupedRegs] = useState<{ male: Registration[]; female: Registration[] }>({ male: [], female: [] });
+const [loadingGrouped, setLoadingGrouped] = useState(false);
+
+// Server-side drop list (persisted in DB). We load it when opening the edit panel.
+const [dropList, setDropList] = useState<Registration[]>([]);
+
+const openEditPanel = async () => {
+  setEditing(true);
+  setLoadingGrouped(true);
+  try {
+    const resp = await fetch("http://localhost:8000/api/registrations/grouped/");
+    if (!resp.ok) {
+      alert("Failed to fetch registrations from backend.");
+      setLoadingGrouped(false);
+      return;
+    }
+    const data = await resp.json();
+    const male: Registration[] = (data.male || []).map((r: any) => ({
+      lrn: r.lrn || "",
+      student: r.student || "",
+      sex: r.sex || "",
+      parent: r.parent || "",
+      guardian: r.guardian || "",
+      id: r.id,
+    }));
+    const female: Registration[] = (data.female || []).map((r: any) => ({
+      lrn: r.lrn || "",
+      student: r.student || "",
+      sex: r.sex || "",
+      parent: r.parent || "",
+      guardian: r.guardian || "",
+      id: r.id,
+    }));
+    setGroupedRegs({ male, female });
+    // also fetch server-side dropped registrations
+    try {
+      const dresp = await fetch('http://localhost:8000/api/dropped/');
+      if (dresp.ok) {
+        const drops = await dresp.json();
+        setDropList(drops.map((r: any) => ({
+          lrn: r.lrn || '',
+          student: r.student || '',
+          sex: r.sex || '',
+          parent: r.parent || '',
+          guardian: r.guardian || '',
+          id: r.id,
+        })));
+      }
+    } catch (e) {
+      // ignore dropped fetch errors - keep empty list
+      console.error('Failed to fetch dropped list:', e);
+    }
+  } catch (e) {
+    console.error("Error fetching grouped regs:", e);
+    alert("Unable to connect to backend.");
+  } finally {
+    setLoadingGrouped(false);
+  }
+};
+
+const closeEditPanel = () => {
+  setEditing(false);
+};
+
+// When dropping, we copy the student's data to the server-side DroppedRegistration
+// (persisted in the backend) and remove the original registration.
+const dropStudent = async (reg: Registration | undefined) => {
+  if (!reg || !reg.id) {
+    alert('Missing registration id, cannot drop via backend.');
+    return;
+  }
+  if (!window.confirm(`Mark '${reg.student}' as dropped (this will delete the registration)?`)) return;
+
+  try {
+    // Use server-side drop endpoint which copies to DroppedRegistration and removes the original
+    const resp = await fetch(`http://localhost:8000/api/registrations/${reg.id}/drop/`, { method: 'POST' });
+    if (resp.ok) {
+      const dropped = await resp.json();
+      alert(`${reg.student} dropped and removed.`);
+      setGroupedRegs((prev) => ({
+        male: prev.male.filter((r) => r.id !== reg.id),
+        female: prev.female.filter((r) => r.id !== reg.id),
+      }));
+      // remove by student name from local registrations
+      setRegistrations((prev) => {
+        const next = prev.filter((r) => r.student !== reg.student);
+        try {
+          localStorage.setItem('registrations', JSON.stringify(next));
+        } catch (e) {
+          // ignore
+        }
+        return next;
+      });
+
+      // Add to local dropList from server response
+      setDropList((prev) => {
+        const next = [...prev, dropped].sort((a, b) => a.student.localeCompare(b.student));
+        return next;
+      });
+    } else {
+      const data = await resp.json().catch(() => ({}));
+      alert('Failed to drop student: ' + (data.error || resp.statusText));
+    }
+  } catch (e) {
+    console.error('Drop error:', e);
+    alert('Unable to connect to backend.');
+  }
+};
+
+// Activate a dropped student: POST to registrations endpoint to recreate the record
+// then remove from drop_list localStorage and update UI state.
+const activateStudent = async (dropped: Registration) => {
+  if (!window.confirm(`Activate '${dropped.student}' and add back to registrations?`)) return;
+
+  try {
+    // call server restore endpoint
+    const resp = await fetch(`http://localhost:8000/api/dropped/${dropped.id}/restore/`, { method: 'POST' });
+    if (resp.ok) {
+      const created = await resp.json().catch(() => null);
+      alert(`${dropped.student} re-activated.`);
+
+      // Remove from local drop list
+      setDropList((prev) => prev.filter((p) => p.id !== dropped.id));
+
+      // Update groupedRegs and registrations using server response
+      if (created) {
+        const newReg: Registration = {
+          lrn: created.lrn || dropped.lrn,
+          student: created.student || dropped.student,
+          sex: created.sex || dropped.sex,
+          parent: created.parent || dropped.parent,
+          guardian: created.guardian || dropped.guardian,
+          id: created.id,
+        };
+        setGroupedRegs((prev) => {
+          const target = (newReg.sex || '').toLowerCase().startsWith('m') ? 'male' : 'female';
+          const next = { ...prev } as typeof groupedRegs;
+          next[target] = [...next[target], newReg].sort((a, b) => a.student.localeCompare(b.student));
+          return next;
+        });
+        setRegistrations((prev) => {
+          const next = [...prev, newReg].sort((a, b) => a.student.localeCompare(b.student));
+          try { localStorage.setItem('registrations', JSON.stringify(next)); } catch (e) {}
+          return next;
+        });
+      }
+    } else {
+      const data = await resp.json().catch(() => ({}));
+      alert('Failed to activate student: ' + (data.error || resp.statusText));
+    }
+  } catch (e) {
+    console.error('Activate error:', e);
+    alert('Unable to connect to backend.');
   }
 };
 
@@ -451,8 +611,8 @@ const clearAll = async () => {
                 <Button onClick={downloadAll} variant="secondary">
                   <Download className="h-4 w-4 mr-2" /> Download CSV
                 </Button>
-                <Button onClick={clearAll} variant="destructive">
-                  <Trash2 className="h-4 w-4 mr-2" /> Clear All
+                <Button onClick={openEditPanel} variant="secondary">
+                  <Trash2 className="h-4 w-4 mr-2" /> Edit
                 </Button>
               </div>
 
@@ -461,6 +621,114 @@ const clearAll = async () => {
               </p>
             </div>
           </div>
+
+          {/* Edit panel/modal */}
+          {editing && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+              <div className="bg-white text-black rounded-lg max-w-4xl w-full p-4 overflow-auto max-h-[80vh]">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-lg font-bold">Edit Registrations</h3>
+                  <div className="flex gap-2">
+                    <Button variant="secondary" onClick={closeEditPanel}>Close</Button>
+                  </div>
+                </div>
+
+                {loadingGrouped ? (
+                  <p>Loading registrations...</p>
+                ) : (
+                  <div className="grid md:grid-cols-3 gap-6">
+                    <div>
+                      <h4 className="font-semibold mb-2">Male</h4>
+                      <table className="w-full text-sm table-auto">
+                        <thead>
+                          <tr className="text-left">
+                            <th className="pb-2">Student</th>
+                            <th className="pb-2">LRN</th>
+                            <th className="pb-2">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {groupedRegs.male.length === 0 && (
+                            <tr><td colSpan={3} className="py-2 text-gray-600">No male students</td></tr>
+                          )}
+                          {groupedRegs.male.map((r) => (
+                            <tr key={r.id ?? r.lrn} className="border-t">
+                              <td className="py-2">{r.student}</td>
+                              <td className="py-2">{r.lrn}</td>
+                              <td className="py-2">
+                                <Button variant="destructive" onClick={() => dropStudent(r)}>
+                                  Drop
+                                </Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div>
+                      <h4 className="font-semibold mb-2">Female</h4>
+                      <table className="w-full text-sm table-auto">
+                        <thead>
+                          <tr className="text-left">
+                            <th className="pb-2">Student</th>
+                            <th className="pb-2">LRN</th>
+                            <th className="pb-2">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {groupedRegs.female.length === 0 && (
+                            <tr><td colSpan={3} className="py-2 text-gray-600">No female students</td></tr>
+                          )}
+                          {groupedRegs.female.map((r) => (
+                            <tr key={r.id ?? r.lrn} className="border-t">
+                              <td className="py-2">{r.student}</td>
+                              <td className="py-2">{r.lrn}</td>
+                              <td className="py-2">
+                                <Button variant="destructive" onClick={() => dropStudent(r)}>
+                                  Drop
+                                </Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div>
+                      <h4 className="font-semibold mb-2">Dropped</h4>
+                      <table className="w-full text-sm table-auto">
+                        <thead>
+                          <tr className="text-left">
+                            <th className="pb-2">Student</th>
+                            <th className="pb-2">LRN</th>
+                            <th className="pb-2">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {dropList.length === 0 && (
+                            <tr><td colSpan={3} className="py-2 text-gray-600">No dropped students</td></tr>
+                          )}
+                          {dropList.map((d) => (
+                            <tr key={d.id ?? d.lrn} className="border-t">
+                              <td className="py-2">{d.student}</td>
+                              <td className="py-2">{d.lrn}</td>
+                              <td className="py-2">
+                                <Button className="bg-green-600 hover:bg-green-700 text-white" onClick={() => activateStudent(d)}>
+                                  Activate
+                                </Button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
         </CardContent>
       </Card>
     </div>

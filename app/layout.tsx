@@ -26,7 +26,14 @@ export default function RootLayout({
 
   return (
     <html lang="en">
-      <body className={`${sansClass} ${monoClass} antialiased`}>
+      {/*
+        suppressHydrationWarning prevents React from throwing a hydration
+        mismatch error when browser extensions (for example Grammarly) inject
+        attributes into the DOM on the client that are not present on the
+        server-rendered HTML. This keeps the layout stable while still
+        rendering correctly server-side.
+      */}
+      <body suppressHydrationWarning className={`${sansClass} ${monoClass} antialiased`}>
         {children}
       </body>
     </html>

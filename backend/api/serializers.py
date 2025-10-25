@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Registration, Attendance
+from .models import Registration, Attendance, DroppedRegistration
 
 class RegistrationSerializer(serializers.ModelSerializer):
     class Meta:
@@ -13,3 +13,9 @@ class AttendanceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Attendance
         fields = ['id', 'student', 'student_name', 'time']
+
+
+class DroppedRegistrationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DroppedRegistration
+        fields = '__all__'

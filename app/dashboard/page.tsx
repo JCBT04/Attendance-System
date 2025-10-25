@@ -16,6 +16,8 @@ export default function Home() {
   // Local UI state and refs
   const [open, setOpen] = useState(false)
   const [attendance, setAttendance] = useState<{ student: string; time: string }[]>([])
+  const [presentMales, setPresentMales] = useState<Array<{ student: string; lrn?: string; time?: string }>>([])
+  const [presentFemales, setPresentFemales] = useState<Array<{ student: string; lrn?: string; time?: string }>>([])
   const [today, setToday] = useState(() => new Date().toISOString().split("T")[0])
   const scannerRef = useRef<Html5Qrcode | null>(null)
   // Backend base URL. Use NEXT_PUBLIC_API_URL if provided, otherwise default to localhost:8000
@@ -34,7 +36,13 @@ export default function Home() {
       // fallback to localStorage recent scans
       try {
         const simple = JSON.parse(localStorage.getItem("attendance_simple") || "[]") as any[]
-        setAttendance((simple || []).map((s) => ({ student: s.student || s.lrn || JSON.stringify(s), time: s.time || "" })))
+        // Only load today's scans into attendance state
+        const todayOnly = (simple || []).filter((s) => {
+          const t = s && s.time ? s.time.toString() : ''
+          const datePart = (t.split('T')[0] || t.split(' ')[0] || '').trim()
+          return isTodayDate(datePart)
+        })
+        setAttendance((todayOnly || []).map((s) => ({ student: s.student || s.lrn || JSON.stringify(s), time: s.time || "" })))
       } catch {
         setAttendance([])
       }
@@ -43,6 +51,68 @@ export default function Home() {
 
   useEffect(() => {
     fetchTodayAttendance()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Recompute grouped present lists whenever attendance (or localStorage) changes
+  useEffect(() => {
+    try {
+      computeTodayPresent()
+    } catch (e) {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attendance])
+
+  // Helper: return local YYYY-MM-DD for a Date
+  function localYMD(d: Date) {
+    const y = d.getFullYear()
+    const m = (d.getMonth() + 1).toString().padStart(2, '0')
+    const day = d.getDate().toString().padStart(2, '0')
+    return `${y}-${m}-${day}`
+  }
+
+  // Check whether a date-string or Date refers to today (local)
+  function isTodayDate(value: string | Date | undefined) {
+    if (!value) return false
+    try {
+      if (value instanceof Date) {
+        return localYMD(value) === localYMD(new Date())
+      }
+      const s = value.toString()
+      // common formats: 'YYYY-MM-DD', 'YYYY-MM-DDTHH:MM:SS', 'YYYY-MM-DD HH:MM:SS'
+      const left = s.split('T')[0].split(' ')[0]
+      if (/^\d{4}-\d{2}-\d{2}$/.test(left)) return left === localYMD(new Date())
+      // fallback to Date parse
+      const parsed = new Date(s)
+      if (!isNaN(parsed.getTime())) return localYMD(parsed) === localYMD(new Date())
+    } catch (e) {
+      // ignore
+    }
+    return false
+  }
+
+  // Schedule a daily refresh at local midnight so the table shows only today's scans
+  useEffect(() => {
+    let t: number | undefined = undefined
+    const scheduleNext = () => {
+      const now = new Date()
+      const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 2)
+      const ms = tomorrow.getTime() - now.getTime()
+      t = window.setTimeout(async () => {
+        try {
+          await fetchTodayAttendance()
+          computeTodayPresent()
+        } catch (e) {
+          // ignore
+        }
+        scheduleNext()
+      }, ms)
+    }
+    scheduleNext()
+    return () => {
+      if (t) clearTimeout(t)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -152,6 +222,101 @@ export default function Home() {
     } catch (err) {
       console.error("Failed to add attendance:", err)
       alert("Failed to add attendance")
+    }
+  }
+
+  // Compute today's present students grouped by sex, sorted alphabetically.
+  async function computeTodayPresent() {
+    try {
+      // Build a map of present keys -> time for today's scans
+      const presentKeyToTime = new Map<string, string>()
+      const normalizeName = (s: any) =>
+        (s || "")
+          .toString()
+          .trim()
+          .replace(/\s+/g, " ")
+          .toLowerCase()
+
+      const normalizeLrn = (s: any) => {
+        const str = (s || "").toString()
+        const digits = (str.match(/\d+/g) || []).join("")
+        return digits || null
+      }
+
+      // From already loaded `attendance` state
+      (attendance || []).forEach((a) => {
+        const nm = normalizeName(a.student)
+        if (nm) presentKeyToTime.set(nm, a.time || "")
+        const l = normalizeLrn(a.student)
+        if (l) presentKeyToTime.set(l, a.time || "")
+      })
+
+      // Also include attendance_simple from localStorage for immediate scans, but only today's entries
+      try {
+        const simpleRaw = localStorage.getItem('attendance_simple')
+        if (simpleRaw) {
+          const simple = JSON.parse(simpleRaw || '[]') as Array<{ student?: string; time?: string; lrn?: string }>
+          simple.forEach((s) => {
+            // Determine if this scan is for today (local)
+            const t = s && s.time ? s.time.toString() : ''
+            // Accept both 'YYYY-MM-DDT..' and 'YYYY-MM-DD ..' shapes
+            const datePart = (t.split('T')[0] || t.split(' ')[0] || '').trim()
+            if (!datePart || !isTodayDate(datePart)) return
+            const keyName = normalizeName(s.student || s.lrn || JSON.stringify(s))
+            if (keyName) presentKeyToTime.set(keyName, s.time || '')
+            const l = normalizeLrn(s.lrn || s.student)
+            if (l) presentKeyToTime.set(l, s.time || '')
+          })
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      // Fetch registrations from backend (fallback to localStorage)
+      let registrations: { student: string; sex: string; lrn: string }[] = []
+      try {
+        const regRes = await fetch(`${API_BASE}/api/registrations/`)
+        if (regRes.ok) registrations = await regRes.json()
+        else {
+          const regRaw = localStorage.getItem('registrations')
+          if (regRaw) registrations = JSON.parse(regRaw)
+        }
+      } catch (e) {
+        try {
+          const regRaw = localStorage.getItem('registrations')
+          if (regRaw) registrations = JSON.parse(regRaw)
+        } catch {}
+      }
+
+      const males: Array<{ student: string; lrn?: string; time?: string }> = []
+      const females: Array<{ student: string; lrn?: string; time?: string }> = []
+
+      // Build set of matched keys so we can collect unregistered later
+      const matchedKeys = new Set<string>()
+
+      registrations.forEach((r) => {
+        const nameKey = normalizeName(r.student)
+        const lrnKey = normalizeLrn(r.lrn) || ''
+        const time = presentKeyToTime.get(nameKey) || presentKeyToTime.get(lrnKey) || ''
+        if (time || presentKeyToTime.has(nameKey) || (lrnKey && presentKeyToTime.has(lrnKey))) {
+          matchedKeys.add(nameKey)
+          if (lrnKey) matchedKeys.add(lrnKey)
+          const obj = { student: r.student || r.lrn || 'Unknown', lrn: r.lrn, time }
+          if ((r.sex || '').toLowerCase() === 'male') males.push(obj)
+          else if ((r.sex || '').toLowerCase() === 'female') females.push(obj)
+          else males.push(obj) // default to males if sex missing to still show
+        }
+      })
+
+      // Sort alphabetically by student name
+      const byName = (x: any, y: any) => ('' + (x.student || '')).localeCompare('' + (y.student || ''))
+      males.sort(byName)
+      females.sort(byName)
+      setPresentMales(males)
+      setPresentFemales(females)
+    } catch (err) {
+      console.error('Failed to compute today present:', err)
+      alert('Failed to compute today present list')
     }
   }
 
@@ -702,13 +867,17 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
         worksheet.getRow(10).eachCell((cell, colNumber) => {
           const day = getCellDay(cell);
           if (day != null) {
-            // Only write indicators for the current month and today's day. Leave other months/days alone.
+            // Only write indicators for the current month and today's day by default.
+            // Special-case: allow SEP sheet to be fully populated (mark absentees) even though it's not the current month.
             const now = new Date();
             const currentMonthName = monthNames[now.getMonth()];
             const todayDay = now.getDate();
-            // Only operate on columns in the current month and on or before today (history up to today)
-            if (month !== currentMonthName || day > todayDay) {
-              // don't modify this cell for non-current-month columns or future days
+            // Skip columns that aren't the current month, except explicitly allow SEP to be processed.
+            if (month !== currentMonthName && month !== 'SEP') {
+              return
+            }
+            // For the current month, don't touch future days beyond today.
+            if (month === currentMonthName && day > todayDay) {
               return
             }
             const markCell = worksheet.getRow(rowIdx).getCell(colNumber);
@@ -785,12 +954,15 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
         worksheet.getRow(10).eachCell((cell, colNumber) => {
           const day = getCellDay(cell);
           if (day != null) {
-            // Only write indicators for the current month and today's day. Leave other months/days alone.
+            // Only write indicators for the current month and today's day by default.
+            // Special-case: allow SEP sheet to be fully populated (mark absentees) even though it's not the current month.
             const now = new Date();
             const currentMonthName = monthNames[now.getMonth()];
             const todayDay = now.getDate();
-            // Only operate on columns in the current month and on or before today (history up to today)
-            if (month !== currentMonthName || day > todayDay) {
+            if (month !== currentMonthName && month !== 'SEP') {
+              return
+            }
+            if (month === currentMonthName && day > todayDay) {
               return
             }
             const markCell = worksheet.getRow(rowIdx).getCell(colNumber);
@@ -1144,23 +1316,68 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
             </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <Table id="attendanceTable">
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="text-yellow-400">Student</TableHead>
-                  <TableHead className="text-yellow-400">Time In</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {attendance.map((a, i) => (
-                  <TableRow key={i}>
-                    <TableCell>{a.student}</TableCell>
-                    <TableCell>{a.time}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+          <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <h3 className="text-yellow-400 font-semibold flex items-center gap-3">Male <span className="text-sm bg-yellow-400/20 text-yellow-300 px-2 py-1 rounded">{presentMales.length}</span></h3>
+              <div className="overflow-x-auto mt-2">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-yellow-400">Name</TableHead>
+                      <TableHead className="text-yellow-400">LRN</TableHead>
+                      <TableHead className="text-yellow-400">Time</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {presentMales.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={3} className="text-muted-foreground">No present male students</TableCell>
+                      </TableRow>
+                    ) : (
+                      presentMales.map((p, i) => (
+                        <TableRow key={`m-${i}`}>
+                          <TableCell>{p.student}</TableCell>
+                          <TableCell>{p.lrn || ''}</TableCell>
+                          <TableCell>{p.time || ''}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-yellow-400 font-semibold flex items-center gap-3">Female <span className="text-sm bg-yellow-400/20 text-yellow-300 px-2 py-1 rounded">{presentFemales.length}</span></h3>
+              <div className="overflow-x-auto mt-2">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-yellow-400">Name</TableHead>
+                      <TableHead className="text-yellow-400">LRN</TableHead>
+                      <TableHead className="text-yellow-400">Time</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {presentFemales.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={3} className="text-muted-foreground">No present female students</TableCell>
+                      </TableRow>
+                    ) : (
+                      presentFemales.map((p, i) => (
+                        <TableRow key={`f-${i}`}>
+                          <TableCell>{p.student}</TableCell>
+                          <TableCell>{p.lrn || ''}</TableCell>
+                          <TableCell>{p.time || ''}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+
+            {/* Unregistered column removed per request */}
           </div>
         </CardContent>
       </Card>

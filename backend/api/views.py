@@ -4,8 +4,8 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.conf import settings
 import os
-from .models import Registration, Attendance
-from .serializers import RegistrationSerializer, AttendanceSerializer
+from .models import Registration, Attendance, DroppedRegistration
+from .serializers import RegistrationSerializer, AttendanceSerializer, DroppedRegistrationSerializer
 from rest_framework.decorators import permission_classes
 from rest_framework.permissions import AllowAny
 import io
@@ -193,3 +193,93 @@ def registrations_grouped(request):
         'male': male_ser.data,
         'female': female_ser.data,
     })
+
+
+@api_view(['POST'])
+def drop_registration(request, pk):
+    """Copy a registration into DroppedRegistration then delete the original.
+
+    This preserves a server-side record of the dropped student so it can be
+    restored later without relying on client localStorage.
+    """
+    try:
+        reg = Registration.objects.get(pk=pk)
+    except Registration.DoesNotExist:
+        return Response({'error': 'Registration not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        # create dropped copy
+        dropped = DroppedRegistration.objects.create(
+            lrn=reg.lrn,
+            student=reg.student,
+            sex=reg.sex,
+            parent=reg.parent,
+            guardian=reg.guardian,
+            original_id=reg.id,
+        )
+
+        # delete original registration (this will cascade-delete attendances)
+        reg.delete()
+
+        ser = DroppedRegistrationSerializer(dropped)
+        return Response(ser.data, status=status.HTTP_201_CREATED)
+    except Exception as e:
+        # Return a helpful message for debugging (dev only)
+        return Response({'error': f'Failed to drop registration: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+def dropped_list(request):
+    try:
+        drops = DroppedRegistration.objects.all().order_by('-dropped_at')
+        ser = DroppedRegistrationSerializer(drops, many=True)
+        return Response(ser.data)
+    except Exception as e:
+        return Response({'error': f'Failed to fetch dropped list: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+def restore_dropped(request, pk):
+    """Restore a dropped registration back into the main Registration table.
+
+    This will create a new Registration using the stored data and remove the
+    DroppedRegistration record.
+    """
+    try:
+        dropped = DroppedRegistration.objects.get(pk=pk)
+    except DroppedRegistration.DoesNotExist:
+        return Response({'error': 'Dropped registration not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        # Prevent duplicate LRN
+        if Registration.objects.filter(lrn=dropped.lrn).exists():
+            return Response({'error': 'Registration with same LRN already exists'}, status=status.HTTP_400_BAD_REQUEST)
+
+        reg = Registration.objects.create(
+            lrn=dropped.lrn,
+            student=dropped.student,
+            sex=dropped.sex,
+            parent=dropped.parent,
+            guardian=dropped.guardian,
+        )
+
+        # delete dropped record
+        dropped.delete()
+
+        ser = RegistrationSerializer(reg)
+        return Response(ser.data, status=status.HTTP_201_CREATED)
+    except Exception as e:
+        return Response({'error': f'Failed to restore dropped registration: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['DELETE'])
+def delete_dropped(request, pk):
+    try:
+        dropped = DroppedRegistration.objects.get(pk=pk)
+    except DroppedRegistration.DoesNotExist:
+        return Response({'error': 'Dropped registration not found'}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        dropped.delete()
+        return Response({'message': 'Dropped registration deleted'}, status=status.HTTP_204_NO_CONTENT)
+    except Exception as e:
+        return Response({'error': f'Failed to delete dropped registration: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
