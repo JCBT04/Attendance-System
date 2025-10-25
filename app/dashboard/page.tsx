@@ -867,16 +867,11 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
         worksheet.getRow(10).eachCell((cell, colNumber) => {
           const day = getCellDay(cell);
           if (day != null) {
-            // Only write indicators for the current month and today's day by default.
-            // Special-case: allow SEP sheet to be fully populated (mark absentees) even though it's not the current month.
+            // Process all months: mark absent/present for every worksheet.
+            // For the current month, don't touch future days beyond today.
             const now = new Date();
             const currentMonthName = monthNames[now.getMonth()];
             const todayDay = now.getDate();
-            // Skip columns that aren't the current month, except explicitly allow SEP to be processed.
-            if (month !== currentMonthName && month !== 'SEP') {
-              return
-            }
-            // For the current month, don't touch future days beyond today.
             if (month === currentMonthName && day > todayDay) {
               return
             }
@@ -954,14 +949,11 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
         worksheet.getRow(10).eachCell((cell, colNumber) => {
           const day = getCellDay(cell);
           if (day != null) {
-            // Only write indicators for the current month and today's day by default.
-            // Special-case: allow SEP sheet to be fully populated (mark absentees) even though it's not the current month.
+            // Process all months: mark absent/present for every worksheet.
+            // For the current month, skip future days beyond today.
             const now = new Date();
             const currentMonthName = monthNames[now.getMonth()];
             const todayDay = now.getDate();
-            if (month !== currentMonthName && month !== 'SEP') {
-              return
-            }
             if (month === currentMonthName && day > todayDay) {
               return
             }
