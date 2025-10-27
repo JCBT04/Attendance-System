@@ -846,6 +846,68 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
           const bytes = new Uint8Array(len);
           for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
           diagImageId = workbook.addImage({ buffer: bytes.buffer, extension: 'png' });
+
+          // Also create AM (top-left) and PM (bottom-right) triangular overlays at a smaller size
+          try {
+            // Slightly smaller triangle overlays for AM/PM to fit better in cells
+            const triW = 30;
+            const triH = 24;
+            // AM (top-left) - yellow
+            const amCanvas = document.createElement('canvas');
+            amCanvas.width = triW;
+            amCanvas.height = triH;
+            const amCtx = amCanvas.getContext('2d');
+            if (amCtx) {
+              amCtx.clearRect(0, 0, triW, triH);
+              amCtx.fillStyle = 'rgba(67, 160, 71, 0.85)'; // green (match PM)
+              amCtx.beginPath();
+              // triangle anchored at top-left corner
+              amCtx.moveTo(0, 0);
+              amCtx.lineTo(0, triH);
+              amCtx.lineTo(triW, 0);
+              amCtx.closePath();
+              amCtx.fill();
+              const amData = amCanvas.toDataURL('image/png').split(',')[1];
+              const amBin = atob(amData);
+              const amLen = amBin.length;
+              const amBytes = new Uint8Array(amLen);
+              for (let i = 0; i < amLen; i++) amBytes[i] = amBin.charCodeAt(i);
+              amImageId = workbook.addImage({ buffer: amBytes.buffer, extension: 'png' });
+            }
+          } catch (e) {
+            console.warn('Failed to create AM triangle image:', e);
+            amImageId = null;
+          }
+
+          try {
+            // PM (bottom-right) - green
+            const triW = 30;
+            const triH = 24;
+            const pmCanvas = document.createElement('canvas');
+            pmCanvas.width = triW;
+            pmCanvas.height = triH;
+            const pmCtx = pmCanvas.getContext('2d');
+            if (pmCtx) {
+              pmCtx.clearRect(0, 0, triW, triH);
+              pmCtx.fillStyle = 'rgba(67, 160, 71, 0.85)';
+              pmCtx.beginPath();
+              // triangle anchored at bottom-right corner
+              pmCtx.moveTo(triW, triH);
+              pmCtx.lineTo(triW, 0);
+              pmCtx.lineTo(0, triH);
+              pmCtx.closePath();
+              pmCtx.fill();
+              const pmData = pmCanvas.toDataURL('image/png').split(',')[1];
+              const pmBin = atob(pmData);
+              const pmLen = pmBin.length;
+              const pmBytes = new Uint8Array(pmLen);
+              for (let i = 0; i < pmLen; i++) pmBytes[i] = pmBin.charCodeAt(i);
+              pmImageId = workbook.addImage({ buffer: pmBytes.buffer, extension: 'png' });
+            }
+          } catch (e) {
+            console.warn('Failed to create PM triangle image:', e);
+            pmImageId = null;
+          }
         }
       } catch (e) {
         console.warn('Failed to create diagonal image for Excel markers:', e);
@@ -930,6 +992,51 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
               right: { style: "thin" },
               diagonal: diagonalBorder
             };
+
+            // Place AM/PM triangular overlays when this student is present on this day
+            try {
+              // Determine bitflags for this student/day (AM/PM)
+              let dayFlag = 0;
+              if (lrnKey && attendanceByStudentMonth[lrnKey] && attendanceByStudentMonth[lrnKey][month] && attendanceByStudentMonth[lrnKey][month][day]) {
+                dayFlag |= attendanceByStudentMonth[lrnKey][month][day];
+              }
+              if (nameKey && attendanceByStudentMonth[nameKey] && attendanceByStudentMonth[nameKey][month] && attendanceByStudentMonth[nameKey][month][day]) {
+                dayFlag |= attendanceByStudentMonth[nameKey][month][day];
+              }
+
+              if (presentCondition && (dayFlag !== 0)) {
+                const anchorCol = colNumber - 1;
+                const anchorRow = rowIdx - 1;
+                const imgW = 30; // smaller triangle width
+                const imgH = 24; // smaller triangle height
+                // AM (top-left)
+                if ((dayFlag & AM_FLAG) && amImageId) {
+                  try {
+                    worksheet.addImage(amImageId, {
+                      tl: { col: anchorCol, row: anchorRow },
+                      ext: { width: imgW, height: imgH }
+                    });
+                  } catch (e) {
+                    // ignore placement errors
+                  }
+                }
+                // PM (bottom-right) - place slightly offset into the cell towards bottom-right
+                // moved upward by reducing the row offset
+                if ((dayFlag & PM_FLAG) && pmImageId) {
+                  try {
+                    // nudged slightly to the left (was +0.55)
+                    worksheet.addImage(pmImageId, {
+                      tl: { col: anchorCol + 0.45, row: anchorRow + 0.08 },
+                      ext: { width: imgW, height: imgH }
+                    });
+                  } catch (e) {
+                    // ignore placement errors
+                  }
+                }
+              }
+            } catch (e) {
+              // ignore
+            }
           }
         });
         rowIdx++;
@@ -1008,6 +1115,38 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
               right: { style: "thin" },
               diagonal: diagonalBorder
             };
+            // Place AM/PM triangular overlays for female rows (mirror of male placement)
+            try {
+              let dayFlagF = 0;
+              if (lrnKeyF && attendanceByStudentMonth[lrnKeyF] && attendanceByStudentMonth[lrnKeyF][month] && attendanceByStudentMonth[lrnKeyF][month][day]) {
+                dayFlagF |= attendanceByStudentMonth[lrnKeyF][month][day];
+              }
+              if (nameKey && attendanceByStudentMonth[nameKey] && attendanceByStudentMonth[nameKey][month] && attendanceByStudentMonth[nameKey][month][day]) {
+                dayFlagF |= attendanceByStudentMonth[nameKey][month][day];
+              }
+
+              if (presentCondition && (dayFlagF !== 0)) {
+                const anchorColF = colNumber - 1;
+                const anchorRowF = rowIdx - 1;
+                const imgWF = 30;
+                const imgHF = 24;
+                // AM (top-left)
+                if ((dayFlagF & AM_FLAG) && amImageId) {
+                  try {
+                    worksheet.addImage(amImageId, { tl: { col: anchorColF, row: anchorRowF }, ext: { width: imgWF, height: imgHF } });
+                  } catch (e) {}
+                }
+                // PM (bottom-right)
+                if ((dayFlagF & PM_FLAG) && pmImageId) {
+                  try {
+                    // nudged slightly to the left (was +0.55)
+                    worksheet.addImage(pmImageId, { tl: { col: anchorColF + 0.45, row: anchorRowF + 0.08 }, ext: { width: imgWF, height: imgHF } });
+                  } catch (e) {}
+                }
+              }
+            } catch (e) {
+              // ignore
+            }
           }
         });
         rowIdx++;

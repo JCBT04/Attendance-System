@@ -349,6 +349,43 @@ const downloadAll = async () => {
   }
 };
 
+  // Format student full name: make surname all UPPERCASE, and make the first name
+  // capitalized (first letter upper, rest lower). Ensure single-letter initials are
+  // uppercased. Accepts either "Surname, First Middle" or "Surname First Middle".
+  const formatStudentName = (value: string) => {
+    const v = (value || "").trim();
+    if (!v) return "";
+
+    const capitalize = (s: string) => (s ? s[0].toUpperCase() + s.slice(1).toLowerCase() : "");
+
+    let surname = "";
+    let rest = "";
+
+    if (v.includes(",")) {
+      const [s, ...r] = v.split(",");
+      surname = s.trim().toUpperCase();
+      rest = r.join(",").trim();
+    } else {
+      const parts = v.split(/\s+/).filter(Boolean);
+      surname = (parts[0] || "").toUpperCase();
+      rest = parts.slice(1).join(" ").trim();
+    }
+
+    if (!rest) return surname;
+
+    const parts = rest.split(/\s+/).filter(Boolean);
+    const first = capitalize(parts[0]);
+    const others = parts.slice(1).map((p) => {
+      if (!p) return "";
+      if (p.length === 1) return p.toUpperCase(); // initial
+      // preserve common punctuation like trailing '.' on initials
+      if (p.length === 2 && p.endsWith('.')) return p[0].toUpperCase() + '.';
+      return capitalize(p);
+    }).filter(Boolean);
+
+    return `${surname}, ${[first, ...others].join(" ")}`.trim();
+  };
+
 //   const clearAll = () => {
 //     if (confirm("Are you sure you want to clear all registrations?")) {
 //       setRegistrations([]);
@@ -576,7 +613,11 @@ const activateStudent = async (dropped: Registration) => {
             {/* Form Panel */}
             <div className="space-y-3">
               <label className="block text-sm">Full Name</label>
-              <Input value={student} onChange={(e) => setStudent(e.target.value)} />
+              <Input
+                value={student}
+                onChange={(e) => setStudent(e.target.value)}
+                onBlur={() => setStudent(formatStudentName(student))}
+              />
               <p className="text-xs text-yellow-300 mt-1">
                 Format: Last Name, First Name Middle Initial
               </p>
