@@ -339,6 +339,46 @@ export default function Home() {
     return new Date(year, month, day)
   }
 
+  // Format a time/date value into "MM-DD-YY | hh:mm AM/PM" for table display.
+  // Accepts ISO datetimes, 'YYYY-MM-DD' strings, Date objects, or other common shapes.
+  // If time is not present in the input, time will show as 12:00 AM (start of day).
+  function formatToMMDDYYWithTime(input?: string | null): string {
+    if (!input) return ''
+    try {
+      let dt: Date | null = null
+      const asStr = input.toString().trim()
+      // If the string starts with YYYY-MM-DD, parse that as local date; otherwise try Date parsing
+      const isoMatch = asStr.match(/^(\d{4}-\d{2}-\d{2})(?:T| )?(.*)?$/)
+      if (isoMatch) {
+        // If there's a time portion present, try Date() parsing to preserve time-of-day
+        if (isoMatch[2] && isoMatch[2].trim()) {
+          const parsed = new Date(asStr)
+          if (!isNaN(parsed.getTime())) dt = parsed
+          else dt = parseLocalDateFromYMD(isoMatch[1])
+        } else {
+          dt = parseLocalDateFromYMD(isoMatch[1])
+        }
+      } else {
+        const parsed = new Date(asStr)
+        if (!isNaN(parsed.getTime())) dt = parsed
+      }
+
+      if (!dt) return ''
+      const mm = (dt.getMonth() + 1).toString().padStart(2, '0')
+      const dd = dt.getDate().toString().padStart(2, '0')
+      const yy = (dt.getFullYear() % 100).toString().padStart(2, '0')
+
+      const hrs = dt.getHours()
+      const mins = dt.getMinutes().toString().padStart(2, '0')
+      const ampm = hrs >= 12 ? 'PM' : 'AM'
+      const h12 = (hrs % 12) || 12
+
+      return `${mm}-${dd}-${yy} | ${h12}:${mins} ${ampm}`
+    } catch (e) {
+      return ''
+    }
+  }
+
   async function startScanner() {
     try {
       const readerElem = document.getElementById("reader")
@@ -828,7 +868,7 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
         dCanvas.width = 51;
         dCanvas.height = 43;
         const dCtx = dCanvas.getContext('2d');
-        if (dCtx) {
+          if (dCtx) {
           // Transparent background
           dCtx.clearRect(0, 0, dCanvas.width, dCanvas.height);
           dCtx.strokeStyle = '#000000';
@@ -849,63 +889,70 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
 
           // Also create AM (top-left) and PM (bottom-right) triangular overlays at a smaller size
           try {
-            // Slightly smaller triangle overlays for AM/PM to fit better in cells
+            // Shared triangle size and color for both AM and PM overlays
             const triW = 30;
             const triH = 24;
-            // AM (top-left) - yellow
-            const amCanvas = document.createElement('canvas');
-            amCanvas.width = triW;
-            amCanvas.height = triH;
-            const amCtx = amCanvas.getContext('2d');
-            if (amCtx) {
-              amCtx.clearRect(0, 0, triW, triH);
-              amCtx.fillStyle = 'rgba(67, 160, 71, 0.85)'; // green (match PM)
-              amCtx.beginPath();
-              // triangle anchored at top-left corner
-              amCtx.moveTo(0, 0);
-              amCtx.lineTo(0, triH);
-              amCtx.lineTo(triW, 0);
-              amCtx.closePath();
-              amCtx.fill();
-              const amData = amCanvas.toDataURL('image/png').split(',')[1];
-              const amBin = atob(amData);
-              const amLen = amBin.length;
-              const amBytes = new Uint8Array(amLen);
-              for (let i = 0; i < amLen; i++) amBytes[i] = amBin.charCodeAt(i);
-              amImageId = workbook.addImage({ buffer: amBytes.buffer, extension: 'png' });
-            }
-          } catch (e) {
-            console.warn('Failed to create AM triangle image:', e);
-            amImageId = null;
-          }
+            const triangleColor = 'rgba(67, 160, 71, 0.85)'; // use same shade for AM and PM
 
-          try {
-            // PM (bottom-right) - green
-            const triW = 30;
-            const triH = 24;
-            const pmCanvas = document.createElement('canvas');
-            pmCanvas.width = triW;
-            pmCanvas.height = triH;
-            const pmCtx = pmCanvas.getContext('2d');
-            if (pmCtx) {
-              pmCtx.clearRect(0, 0, triW, triH);
-              pmCtx.fillStyle = 'rgba(67, 160, 71, 0.85)';
-              pmCtx.beginPath();
-              // triangle anchored at bottom-right corner
-              pmCtx.moveTo(triW, triH);
-              pmCtx.lineTo(triW, 0);
-              pmCtx.lineTo(0, triH);
-              pmCtx.closePath();
-              pmCtx.fill();
-              const pmData = pmCanvas.toDataURL('image/png').split(',')[1];
-              const pmBin = atob(pmData);
-              const pmLen = pmBin.length;
-              const pmBytes = new Uint8Array(pmLen);
-              for (let i = 0; i < pmLen; i++) pmBytes[i] = pmBin.charCodeAt(i);
-              pmImageId = workbook.addImage({ buffer: pmBytes.buffer, extension: 'png' });
+            // AM (top-left) - use shared color
+            try {
+              const amCanvas = document.createElement('canvas');
+              amCanvas.width = triW;
+              amCanvas.height = triH;
+              const amCtx = amCanvas.getContext('2d');
+              if (amCtx) {
+                amCtx.clearRect(0, 0, triW, triH);
+                amCtx.fillStyle = triangleColor;
+                amCtx.beginPath();
+                // triangle anchored at top-left corner but inset slightly so a small white corner remains
+                const pad = 2;
+                amCtx.moveTo(pad, pad);
+                amCtx.lineTo(pad, triH - pad);
+                amCtx.lineTo(triW - pad, pad);
+                amCtx.closePath();
+                amCtx.fill();
+                const amData = amCanvas.toDataURL('image/png').split(',')[1];
+                const amBin = atob(amData);
+                const amLen = amBin.length;
+                const amBytes = new Uint8Array(amLen);
+                for (let i = 0; i < amLen; i++) amBytes[i] = amBin.charCodeAt(i);
+                amImageId = workbook.addImage({ buffer: amBytes.buffer, extension: 'png' });
+              }
+            } catch (e) {
+              console.warn('Failed to create AM triangle image:', e);
+              amImageId = null;
+            }
+
+            // PM (bottom-right) - use same shared color and size
+            try {
+              const pmCanvas = document.createElement('canvas');
+              pmCanvas.width = triW;
+              pmCanvas.height = triH;
+              const pmCtx = pmCanvas.getContext('2d');
+              if (pmCtx) {
+                pmCtx.clearRect(0, 0, triW, triH);
+                pmCtx.fillStyle = triangleColor;
+                pmCtx.beginPath();
+                // triangle anchored at bottom-right corner
+                pmCtx.moveTo(triW, triH);
+                pmCtx.lineTo(triW, 0);
+                pmCtx.lineTo(0, triH);
+                pmCtx.closePath();
+                pmCtx.fill();
+                const pmData = pmCanvas.toDataURL('image/png').split(',')[1];
+                const pmBin = atob(pmData);
+                const pmLen = pmBin.length;
+                const pmBytes = new Uint8Array(pmLen);
+                for (let i = 0; i < pmLen; i++) pmBytes[i] = pmBin.charCodeAt(i);
+                pmImageId = workbook.addImage({ buffer: pmBytes.buffer, extension: 'png' });
+              }
+            } catch (e) {
+              console.warn('Failed to create PM triangle image:', e);
+              pmImageId = null;
             }
           } catch (e) {
-            console.warn('Failed to create PM triangle image:', e);
+            console.warn('Failed to create AM/PM triangle images:', e);
+            amImageId = null;
             pmImageId = null;
           }
         }
@@ -929,11 +976,29 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
         worksheet.getRow(10).eachCell((cell, colNumber) => {
           const day = getCellDay(cell);
           if (day != null) {
-            // Process all months: mark absent/present for every worksheet.
-            // For the current month, don't touch future days beyond today.
+            // Process months only within the academic year (June..March) up to the current month.
+            // Academic year start: June (5), end: March (2).
             const now = new Date();
             const currentMonthName = monthNames[now.getMonth()];
             const todayDay = now.getDate();
+            const monthIndex = monthNames.indexOf(month);
+            const ACADEMIC_START = 5; // June
+            const ACADEMIC_END = 2; // March
+            const nowM = now.getMonth();
+            const isAcademicAllowed = (() => {
+              // If now is June..Dec: allowed months are June..now
+              if (nowM >= ACADEMIC_START) {
+                return monthIndex >= ACADEMIC_START && monthIndex <= nowM;
+              }
+              // If now is Jan..Mar: allowed months are June..Dec (previous year) and Jan..now
+              if (nowM <= ACADEMIC_END) {
+                return (monthIndex >= ACADEMIC_START && monthIndex <= 11) || (monthIndex >= 0 && monthIndex <= nowM);
+              }
+              // If now is Apr or May: the academic year just finished; treat full academic year (Jun..Mar) as past
+              return (monthIndex >= ACADEMIC_START && monthIndex <= 11) || (monthIndex >= 0 && monthIndex <= ACADEMIC_END);
+            })();
+            if (!isAcademicAllowed) return;
+            // For the current month, skip future days beyond today.
             if (month === currentMonthName && day > todayDay) {
               return
             }
@@ -961,19 +1026,81 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
             const presentCondition = studentMonthDates.has(day) && day !== 1;
             // Apply fill and font first
             if (presentCondition) {
-              // ✅ Present: leave blank (no marker) but ensure alignment and clear fill/font
+              // ✅ Present: preserve underlying cell value (do not remove data), only clear visual formatting
               try {
-                markCell.value = "";
                 markCell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
                 (markCell as any).font = undefined;
                 (markCell as any).fill = undefined;
               } catch {}
             } else {
-              // ❌ Absent: mark X
-              markCell.value = "X";
+              // ❌ Absent: mark with an "X" and shade that cell.
+              // Keep the cell value for data integrity but hide the visible X by matching its
+              // font color to the fill color so the character is not visible in the exported sheet.
+              markCell.value = "X"; // Use character X instead of square
               markCell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
-              markCell.font = { color: { argb: "FF000000" }, bold: false };
-              markCell.fill = { type: "pattern", pattern: "none" };
+              try {
+                const sval = (typeof markCell.value === 'string') ? markCell.value.trim().toUpperCase() : '';
+                if (sval === 'X') {
+                  const fillColor = 'FFFF7F7F';
+                  (markCell as any).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } };
+                  // Set font color equal to fill color so the 'X' becomes visually hidden
+                  markCell.font = { color: { argb: fillColor }, bold: false };
+                  // Also overlay a small colored PNG so the color is visible even if the template overrides fills
+                  try {
+                    // compute approximate pixel dimensions for this cell so the overlay matches the cell size
+                    let rectW = 51;
+                    let rectH = 43;
+                    try {
+                      const colObj: any = worksheet.getColumn(colNumber as number);
+                      const colWidth = (colObj && colObj.width) ? Number(colObj.width) : 8.43; // chars
+                      // approximate pixel width from character width
+                      rectW = Math.max(8, Math.round(colWidth * 7 + 5));
+                    } catch {}
+                    try {
+                      const rowObj: any = worksheet.getRow(rowIdx as number);
+                      const rowPts = (rowObj && rowObj.height) ? Number(rowObj.height) : 15; // points
+                      rectH = Math.max(10, Math.round(rowPts * 96 / 72));
+                    } catch {}
+                    const rectCanvas = document.createElement('canvas');
+                    rectCanvas.width = rectW;
+                    rectCanvas.height = rectH;
+                    const rectCtx = rectCanvas.getContext('2d');
+                    if (rectCtx) {
+                      // parse ARGB like 'FFFF7F7F' -> rgb
+                      const hex = (fillColor || 'FFFF7F7F').slice(2);
+                      const r = parseInt(hex.slice(0, 2), 16);
+                      const g = parseInt(hex.slice(2, 4), 16);
+                      const b = parseInt(hex.slice(4, 6), 16);
+                      rectCtx.fillStyle = `rgba(${r},${g},${b},0.92)`;
+                      rectCtx.fillRect(0, 0, rectW, rectH);
+                      const dataUrl = rectCanvas.toDataURL('image/png');
+                      const base64 = dataUrl.split(',')[1];
+                      const binary = atob(base64);
+                      const len = binary.length;
+                      const bytes = new Uint8Array(len);
+                      for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+                      const rectImageId = workbook.addImage({ buffer: bytes.buffer, extension: 'png' });
+                      const anchorCol = colNumber - 1;
+                      const anchorRow = rowIdx - 1;
+                      try {
+                        const pad = Math.max(2, Math.round(Math.min(rectW, rectH) * 0.06));
+                        const extW = Math.max(1, rectW - pad * 2);
+                        const extH = Math.max(1, rectH - pad * 2);
+                        const colOffset = pad / Math.max(1, rectW);
+                        const rowOffset = pad / Math.max(1, rectH);
+                        worksheet.addImage(rectImageId, { tl: { col: anchorCol + colOffset, row: anchorRow + rowOffset }, ext: { width: extW, height: extH } });
+                      } catch (e) {
+                        // ignore placement errors
+                      }
+                    }
+                  } catch (e) {
+                    // ignore image creation errors
+                  }
+                } else {
+                  (markCell as any).fill = undefined;
+                  markCell.font = { color: { argb: 'FF000000' }, bold: false };
+                }
+              } catch {}
             }
 
             // Now construct the border (diagonal) after fill is applied so shading remains visible.
@@ -985,13 +1112,26 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
               color: { argb: "FF000000" }
             };
 
-            (markCell as any).border = {
-              top: { style: "thin" },
-              left: { style: "thin" },
-              bottom: { style: "thin" },
-              right: { style: "thin" },
-              diagonal: diagonalBorder
-            };
+            // Only add the diagonal border for present cells; for absent (shaded) cells
+            // avoid adding the diagonal so the colored overlay appears uninterrupted.
+            try {
+              if (presentCondition) {
+                (markCell as any).border = {
+                  top: { style: "thin" },
+                  left: { style: "thin" },
+                  bottom: { style: "thin" },
+                  right: { style: "thin" },
+                  diagonal: diagonalBorder
+                };
+              } else {
+                (markCell as any).border = {
+                  top: { style: "thin" },
+                  left: { style: "thin" },
+                  bottom: { style: "thin" },
+                  right: { style: "thin" }
+                };
+              }
+            } catch (e) {}
 
             // Place AM/PM triangular overlays when this student is present on this day
             try {
@@ -1012,8 +1152,9 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                 // AM (top-left)
                 if ((dayFlag & AM_FLAG) && amImageId) {
                   try {
+                    // Nudge AM triangle slightly lower and to the right so it sits more centered in the cell
                     worksheet.addImage(amImageId, {
-                      tl: { col: anchorCol, row: anchorRow },
+                      tl: { col: anchorCol + 0.16, row: anchorRow + 0.12 },
                       ext: { width: imgW, height: imgH }
                     });
                   } catch (e) {
@@ -1056,11 +1197,29 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
         worksheet.getRow(10).eachCell((cell, colNumber) => {
           const day = getCellDay(cell);
           if (day != null) {
-            // Process all months: mark absent/present for every worksheet.
-            // For the current month, skip future days beyond today.
+            // Process months only within the academic year (June..March) up to the current month.
+            // Academic year start: June (5), end: March (2).
             const now = new Date();
             const currentMonthName = monthNames[now.getMonth()];
             const todayDay = now.getDate();
+            const monthIndex = monthNames.indexOf(month);
+            const ACADEMIC_START = 5; // June
+            const ACADEMIC_END = 2; // March
+            const nowM = now.getMonth();
+            const isAcademicAllowed = (() => {
+              // If now is June..Dec: allowed months are June..now
+              if (nowM >= ACADEMIC_START) {
+                return monthIndex >= ACADEMIC_START && monthIndex <= nowM;
+              }
+              // If now is Jan..Mar: allowed months are June..Dec (previous year) and Jan..now
+              if (nowM <= ACADEMIC_END) {
+                return (monthIndex >= ACADEMIC_START && monthIndex <= 11) || (monthIndex >= 0 && monthIndex <= nowM);
+              }
+              // If now is Apr or May: the academic year just finished; treat full academic year (Jun..Mar) as past
+              return (monthIndex >= ACADEMIC_START && monthIndex <= 11) || (monthIndex >= 0 && monthIndex <= ACADEMIC_END);
+            })();
+            if (!isAcademicAllowed) return;
+            // For the current month, skip future days beyond today.
             if (month === currentMonthName && day > todayDay) {
               return
             }
@@ -1087,18 +1246,74 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
             const presentCondition = studentMonthDates.has(day) && day !== 1;
             // Apply fill and font first
             if (presentCondition) {
-              // ✅ Present: leave blank (no marker) but ensure alignment and clear fill/font
+              // ✅ Present: preserve underlying cell value (do not remove data), only clear visual formatting
               try {
-                markCell.value = "";
                 markCell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
                 (markCell as any).font = undefined;
                 (markCell as any).fill = undefined;
               } catch {}
             } else {
-              markCell.value = "X";
+              // ❌ Absent: mark with an "X" and shade that cell.
+              // Keep the cell value for data integrity but hide the visible X by matching its
+              // font color to the fill color so the character is not visible in the exported sheet.
+              markCell.value = "X"; // Use character X instead of square
               markCell.alignment = { vertical: 'middle', horizontal: 'center' } as any;
-              markCell.font = { color: { argb: "FF000000" }, bold: false };
-              markCell.fill = { type: "pattern", pattern: "none" };
+              try {
+                const sval = (typeof markCell.value === 'string') ? markCell.value.trim().toUpperCase() : '';
+                if (sval === 'X') {
+                  const fillColor = 'FFFF7F7F';
+                  (markCell as any).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } };
+                  // Set font color equal to fill color so the 'X' becomes visually hidden
+                  markCell.font = { color: { argb: fillColor }, bold: false };
+                  // Overlay colored PNG to work around template fill overrides
+                  try {
+                    let rectW = 51;
+                    let rectH = 43;
+                    try {
+                      const colObjF: any = worksheet.getColumn(colNumber as number);
+                      const colWidthF = (colObjF && colObjF.width) ? Number(colObjF.width) : 8.43;
+                      rectW = Math.max(8, Math.round(colWidthF * 7 + 5));
+                    } catch {}
+                    try {
+                      const rowObjF: any = worksheet.getRow(rowIdx as number);
+                      const rowPtsF = (rowObjF && rowObjF.height) ? Number(rowObjF.height) : 15;
+                      rectH = Math.max(10, Math.round(rowPtsF * 96 / 72));
+                    } catch {}
+                    const rectCanvas = document.createElement('canvas');
+                    rectCanvas.width = rectW;
+                    rectCanvas.height = rectH;
+                    const rectCtx = rectCanvas.getContext('2d');
+                    if (rectCtx) {
+                      const hex = (fillColor || 'FFFF7F7F').slice(2);
+                      const r = parseInt(hex.slice(0, 2), 16);
+                      const g = parseInt(hex.slice(2, 4), 16);
+                      const b = parseInt(hex.slice(4, 6), 16);
+                      rectCtx.fillStyle = `rgba(${r},${g},${b},0.92)`;
+                      rectCtx.fillRect(0, 0, rectW, rectH);
+                      const dataUrl = rectCanvas.toDataURL('image/png');
+                      const base64 = dataUrl.split(',')[1];
+                      const binary = atob(base64);
+                      const len = binary.length;
+                      const bytes = new Uint8Array(len);
+                      for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+                      const rectImageId = workbook.addImage({ buffer: bytes.buffer, extension: 'png' });
+                      const anchorColF = colNumber - 1;
+                      const anchorRowF = rowIdx - 1;
+                      try {
+                        const padF = Math.max(2, Math.round(Math.min(rectW, rectH) * 0.06));
+                        const extWF = Math.max(1, rectW - padF * 2);
+                        const extHF = Math.max(1, rectH - padF * 2);
+                        const colOffsetF = padF / Math.max(1, rectW);
+                        const rowOffsetF = padF / Math.max(1, rectH);
+                        worksheet.addImage(rectImageId, { tl: { col: anchorColF + colOffsetF, row: anchorRowF + rowOffsetF }, ext: { width: extWF, height: extHF } });
+                      } catch (e) {}
+                    }
+                  } catch (e) {}
+                } else {
+                  (markCell as any).fill = undefined;
+                  markCell.font = { color: { argb: 'FF000000' }, bold: false };
+                }
+              } catch {}
             }
 
             // If the cell is shaded/present, force the diagonal to white so it remains visible over the green marker.
@@ -1133,7 +1348,8 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                 // AM (top-left)
                 if ((dayFlagF & AM_FLAG) && amImageId) {
                   try {
-                    worksheet.addImage(amImageId, { tl: { col: anchorColF, row: anchorRowF }, ext: { width: imgWF, height: imgHF } });
+                    // Nudge AM triangle slightly lower and to the right for female rows as well
+                    worksheet.addImage(amImageId, { tl: { col: anchorColF + 0.16, row: anchorRowF + 0.12 }, ext: { width: imgWF, height: imgHF } });
                   } catch (e) {}
                 }
                 // PM (bottom-right)
@@ -1152,6 +1368,150 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
         rowIdx++;
       });
 
+      // After marking cells, enforce fills: only cells that contain exactly 'X' (case-insensitive)
+      // should have the pale-red fill. This clears any accidental shading left from templates or prior runs.
+      try {
+        for (const col of dateCols) {
+          // male rows 13..62
+          for (let r = 13; r <= 62; r++) {
+            try {
+              const cell = worksheet.getRow(r).getCell(col) as any;
+              let text = '';
+              const v = cell.value;
+              if (typeof v === 'string') text = v;
+              else if (v && typeof v === 'object') {
+                if (Array.isArray((v as any).richText)) text = (v as any).richText.map((p: any) => p.text || '').join('');
+                else if ((v as any).text) text = (v as any).text.toString();
+              }
+              const sval = (text || '').toString().trim().toUpperCase();
+              if (sval === 'X') {
+                const fillColor = 'FFFF7F7F';
+                // Try to set fill; also overlay an image rectangle in case template blocks fills
+                try {
+                  cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } };
+                } catch {}
+                try {
+                  cell.font = { color: { argb: fillColor } };
+                } catch {}
+                try {
+                  let rectW = 51;
+                  let rectH = 43;
+                  try {
+                    const colObj2: any = worksheet.getColumn(col as number);
+                    const colWidth2 = (colObj2 && colObj2.width) ? Number(colObj2.width) : 8.43;
+                    rectW = Math.max(8, Math.round(colWidth2 * 7 + 5));
+                  } catch {}
+                  try {
+                    const rowObj2: any = worksheet.getRow(r as number);
+                    const rowPts2 = (rowObj2 && rowObj2.height) ? Number(rowObj2.height) : 15;
+                    rectH = Math.max(10, Math.round(rowPts2 * 96 / 72));
+                  } catch {}
+                  const rectCanvas = document.createElement('canvas');
+                  rectCanvas.width = rectW;
+                  rectCanvas.height = rectH;
+                  const rectCtx = rectCanvas.getContext('2d');
+                  if (rectCtx) {
+                    const hex = (fillColor || 'FFFF7F7F').slice(2);
+                    const r = parseInt(hex.slice(0, 2), 16);
+                    const g = parseInt(hex.slice(2, 4), 16);
+                    const b = parseInt(hex.slice(4, 6), 16);
+                    rectCtx.fillStyle = `rgba(${r},${g},${b},0.92)`;
+                    rectCtx.fillRect(0, 0, rectW, rectH);
+                    const dataUrl = rectCanvas.toDataURL('image/png');
+                    const base64 = dataUrl.split(',')[1];
+                    const binary = atob(base64);
+                    const len = binary.length;
+                    const bytes = new Uint8Array(len);
+                    for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+                    const rectImageId = workbook.addImage({ buffer: bytes.buffer, extension: 'png' });
+                    try {
+                      const pad2 = Math.max(2, Math.round(Math.min(rectW, rectH) * 0.06));
+                      const extW2 = Math.max(1, rectW - pad2 * 2);
+                      const extH2 = Math.max(1, rectH - pad2 * 2);
+                      const colOffset2 = pad2 / Math.max(1, rectW);
+                      const rowOffset2 = pad2 / Math.max(1, rectH);
+                      worksheet.addImage(rectImageId, { tl: { col: col - 1 + colOffset2, row: r - 1 + rowOffset2 }, ext: { width: extW2, height: extH2 } });
+                    } catch {}
+                  }
+                } catch {}
+              } else {
+                cell.fill = undefined;
+                cell.font = { color: { argb: 'FF000000' } };
+              }
+            } catch {}
+          }
+          // female rows 64..113
+          for (let r = 64; r <= 113; r++) {
+            try {
+              const cell = worksheet.getRow(r).getCell(col) as any;
+              let text = '';
+              const v = cell.value;
+              if (typeof v === 'string') text = v;
+              else if (v && typeof v === 'object') {
+                if (Array.isArray((v as any).richText)) text = (v as any).richText.map((p: any) => p.text || '').join('');
+                else if ((v as any).text) text = (v as any).text.toString();
+              }
+              const sval = (text || '').toString().trim().toUpperCase();
+              if (sval === 'X') {
+                const fillColor = 'FFFF7F7F';
+                try {
+                  cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } };
+                } catch {}
+                try {
+                  cell.font = { color: { argb: fillColor } };
+                } catch {}
+                try {
+                  let rectW = 51;
+                  let rectH = 43;
+                  try {
+                    const colObj3: any = worksheet.getColumn(col as number);
+                    const colWidth3 = (colObj3 && colObj3.width) ? Number(colObj3.width) : 8.43;
+                    rectW = Math.max(8, Math.round(colWidth3 * 7 + 5));
+                  } catch {}
+                  try {
+                    const rowObj3: any = worksheet.getRow(r as number);
+                    const rowPts3 = (rowObj3 && rowObj3.height) ? Number(rowObj3.height) : 15;
+                    rectH = Math.max(10, Math.round(rowPts3 * 96 / 72));
+                  } catch {}
+                  const rectCanvas = document.createElement('canvas');
+                  rectCanvas.width = rectW;
+                  rectCanvas.height = rectH;
+                  const rectCtx = rectCanvas.getContext('2d');
+                  if (rectCtx) {
+                    const hex = (fillColor || 'FFFF7F7F').slice(2);
+                    const r = parseInt(hex.slice(0, 2), 16);
+                    const g = parseInt(hex.slice(2, 4), 16);
+                    const b = parseInt(hex.slice(4, 6), 16);
+                    rectCtx.fillStyle = `rgba(${r},${g},${b},0.92)`;
+                    rectCtx.fillRect(0, 0, rectW, rectH);
+                    const dataUrl = rectCanvas.toDataURL('image/png');
+                    const base64 = dataUrl.split(',')[1];
+                    const binary = atob(base64);
+                    const len = binary.length;
+                    const bytes = new Uint8Array(len);
+                    for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+                    const rectImageId = workbook.addImage({ buffer: bytes.buffer, extension: 'png' });
+                      try {
+                        const pad3 = Math.max(2, Math.round(Math.min(rectW, rectH) * 0.06));
+                        const extW3 = Math.max(1, rectW - pad3 * 2);
+                        const extH3 = Math.max(1, rectH - pad3 * 2);
+                        const colOffset3 = pad3 / Math.max(1, rectW);
+                        const rowOffset3 = pad3 / Math.max(1, rectH);
+                        worksheet.addImage(rectImageId, { tl: { col: col - 1 + colOffset3, row: r - 1 + rowOffset3 }, ext: { width: extW3, height: extH3 } });
+                      } catch {}
+                  }
+                } catch {}
+              } else {
+                cell.fill = undefined;
+                cell.font = { color: { argb: 'FF000000' } };
+              }
+            } catch {}
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+
       // Ensure every attendance cell in the specified template date range has a dashed diagonal (preserve other borders)
       try {
         const diagDef = { up: true, down: false, style: 'dashed', color: { argb: 'FF000000' } };
@@ -1169,15 +1529,58 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
           for (let r = maleStart; r <= maleEnd; r++) {
             try {
               const cell = worksheet.getRow(r).getCell(col) as any;
-              const existing = cell.border || {};
-              cell.border = { ...existing, diagonal: diagDef };
+              // If this cell has an explicit fill or contains an 'X' we skip adding the diagonal
+              // so the colored overlay/fill appears without internal diagonal lines.
+              const hasFill = !!((cell && (cell.fill && (cell.fill.fgColor || cell.fill.type))));
+              const textVal = (() => {
+                try {
+                  const v = cell && cell.value;
+                  if (typeof v === 'string') return v.trim().toUpperCase();
+                  if (v && typeof v === 'object') {
+                    if (Array.isArray((v as any).richText)) return (v as any).richText.map((p: any) => p.text || '').join('').trim().toUpperCase();
+                    if ((v as any).text) return (v as any).text.toString().trim().toUpperCase();
+                  }
+                } catch {}
+                return '';
+              })();
+              if (!hasFill && textVal !== 'X') {
+                const existing = cell.border || {};
+                cell.border = { ...existing, diagonal: diagDef };
+              } else {
+                // preserve other border parts but ensure diagonal is not set
+                try {
+                  const existing = cell.border || {};
+                  const { diagonal, ...rest } = existing as any;
+                  cell.border = { ...rest };
+                } catch {}
+              }
             } catch {}
           }
           for (let r = femaleStart; r <= femaleEnd; r++) {
             try {
               const cell = worksheet.getRow(r).getCell(col) as any;
-              const existing = cell.border || {};
-              cell.border = { ...existing, diagonal: diagDef };
+              const hasFill = !!((cell && (cell.fill && (cell.fill.fgColor || cell.fill.type))));
+              const textVal = (() => {
+                try {
+                  const v = cell && cell.value;
+                  if (typeof v === 'string') return v.trim().toUpperCase();
+                  if (v && typeof v === 'object') {
+                    if (Array.isArray((v as any).richText)) return (v as any).richText.map((p: any) => p.text || '').join('').trim().toUpperCase();
+                    if ((v as any).text) return (v as any).text.toString().trim().toUpperCase();
+                  }
+                } catch {}
+                return '';
+              })();
+              if (!hasFill && textVal !== 'X') {
+                const existing = cell.border || {};
+                cell.border = { ...existing, diagonal: diagDef };
+              } else {
+                try {
+                  const existing = cell.border || {};
+                  const { diagonal, ...rest } = existing as any;
+                  cell.border = { ...rest };
+                } catch {}
+              }
             } catch {}
           }
         }
@@ -1469,7 +1872,7 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                         <TableRow key={`m-${i}`}>
                           <TableCell>{p.student}</TableCell>
                           <TableCell>{p.lrn || ''}</TableCell>
-                          <TableCell>{p.time || ''}</TableCell>
+                          <TableCell>{formatToMMDDYYWithTime(p.time) || ''}</TableCell>
                         </TableRow>
                       ))
                     )}
@@ -1499,7 +1902,7 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                         <TableRow key={`f-${i}`}>
                           <TableCell>{p.student}</TableCell>
                           <TableCell>{p.lrn || ''}</TableCell>
-                          <TableCell>{p.time || ''}</TableCell>
+                          <TableCell>{formatToMMDDYYWithTime(p.time) || ''}</TableCell>
                         </TableRow>
                       ))
                     )}

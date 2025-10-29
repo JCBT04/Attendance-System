@@ -11,7 +11,7 @@ from rest_framework.permissions import AllowAny
 import io
 try:
     import openpyxl
-    from openpyxl.styles import Font, Alignment
+    from openpyxl.styles import Font, Alignment, PatternFill
 except Exception:
     openpyxl = None
 
@@ -300,6 +300,63 @@ def generate_excel_export(request):
         # Pillow not available or unexpected error — skip adding images
         pass
 
+    # ------ Server-side shading for absent 'X' cells ------
+    # Use openpyxl PatternFill to shade cells containing 'X' so shading works even if Pillow
+    # is not installed in the environment. This is faster and more reliable than image overlays
+    # for full-cell coloring.
+    try:
+        import re
+        # only match an exact single-character X-like glyph
+        x_re = re.compile(r"^[xX\u2715\u2716\u00D7\u2718\u2717]$")
+        from openpyxl.styles import PatternFill as _PatternFill
+
+        # determine fill color (ARGB) - use pale red
+        _fill_hex = 'FFD6D6'
+        if len(_fill_hex) == 6 and not _fill_hex.upper().startswith('FF'):
+            _fill_argb = 'FF' + _fill_hex
+        elif len(_fill_hex) == 8 and _fill_hex.upper().startswith('FF'):
+            _fill_argb = _fill_hex
+        else:
+            _fill_argb = 'FF' + _fill_hex
+
+        _fill = _PatternFill(fill_type='solid', start_color=_fill_argb, end_color=_fill_argb)
+
+        max_row = row - 1 if 'row' in locals() else wb.active.max_row
+        for r_idx in range(2, max_row + 1):
+            for d in range(1, today.day + 1):
+                try:
+                    col_idx = 2 + d
+                    cell = ws.cell(row=r_idx, column=col_idx)
+                    v = cell.value
+                    if v is None:
+                        continue
+
+                    # Skip formula cells entirely - we don't want to match "x" inside formulas
+                    if getattr(cell, 'data_type', None) == 'f':
+                        continue
+                    if isinstance(v, str) and v.startswith('='):
+                        continue
+
+                    s = str(v).strip()
+                    if not s:
+                        continue
+
+                    # require exact match (single glyph) rather than substring search
+                    if not x_re.fullmatch(s):
+                        continue
+
+                    # Apply a solid PatternFill so Excel will show the pale-red shading
+                    try:
+                        cell.fill = _fill
+                    except Exception:
+                        # best-effort: ignore if fill cannot be applied
+                        pass
+                except Exception:
+                    continue
+    except Exception:
+        # If anything unexpected happens, continue without blocking the export
+        pass
+
     # Save workbook to exports
     out_dir = settings.BASE_DIR / 'exports'
     try:
@@ -575,3 +632,173 @@ def generate_half_triangle_excel(request):
     out.seek(0)
 
     return FileResponse(out, as_attachment=True, filename='half_triangle.xlsx')
+
+
+@api_view(['GET'])
+def shade_x_cells_excel(request):
+    """Produce an Excel file where only cells containing an 'X' (or X-like glyph)
+    receive a pale-red full-cell shading applied via a PNG overlay.
+
+    Query params:
+    - sheet: optional sheet name to restrict processing (default: all sheets)
+    - color: optional hex RGB for shading (default: FFC0CB-like pale red 'FFD6D6')
+    - debug=1: write small debug notes next to first detected cell
+    """
+    if openpyxl is None:
+        return Response({'error': 'openpyxl is not available on the server'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # Pillow required for PNG overlays
+    try:
+        from PIL import Image as PILImage, ImageDraw
+    except Exception:
+        return Response({'error': 'Pillow (PIL) is required to generate PNG overlays. Please install with pip install pillow'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    try:
+        from openpyxl.drawing.image import Image as OpenpyxlImage
+    except Exception:
+        return Response({'error': 'openpyxl.drawing.image.Image unavailable'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # Load template if available (public/attendance_template.xlsx) otherwise create blank workbook
+    try:
+        template_path = settings.BASE_DIR.parent / 'public' / 'attendance_template.xlsx'
+        if template_path.exists():
+            wb = openpyxl.load_workbook(str(template_path))
+        else:
+            wb = openpyxl.Workbook()
+    except Exception:
+        wb = openpyxl.Workbook()
+
+    # color for shading (hex without #)
+    color_hex = (request.GET.get('color') or 'FFD6D6').lstrip('#')
+
+    def hex_to_rgba(hx: str, alpha: int = 255):
+        try:
+            if len(hx) == 3:
+                hx = ''.join([c*2 for c in hx])
+            r = int(hx[0:2], 16)
+            g = int(hx[2:4], 16)
+            b = int(hx[4:6], 16)
+            return (r, g, b, alpha)
+        except Exception:
+            return (255, 214, 214, alpha)
+
+    rgba = hex_to_rgba(color_hex, 255)
+
+    # Helpers to compute approximate pixel size for a cell (same heuristics used elsewhere)
+    from openpyxl.utils import get_column_letter
+
+    def get_column_width_pixels(ws, col_letter: str) -> int:
+        default_width = getattr(ws.sheet_format, 'defaultColWidth', None) or 8.43
+        cd = ws.column_dimensions.get(col_letter)
+        width = getattr(cd, 'width', None) or default_width
+        try:
+            px = int(float(width) * 7 + 5)
+        except Exception:
+            px = int(default_width * 7 + 5)
+        return max(px, 20)
+
+    def get_row_height_pixels(ws, row_idx: int) -> int:
+        default_height = getattr(ws.sheet_format, 'defaultRowHeight', None) or 15
+        rd = ws.row_dimensions.get(row_idx)
+        height = getattr(rd, 'height', None) or default_height
+        try:
+            px = int(float(height) * 96.0 / 72.0)
+        except Exception:
+            px = int(default_height * 96.0 / 72.0)
+        return max(px, 12)
+
+    # Detection helper for X-like glyphs
+    import re
+    x_re = re.compile(r"^[xX\u2715\u2716\u00D7\u2718\u2717]$")
+
+    def cell_has_x(cell) -> bool:
+        try:
+            v = cell.value
+            if v is None:
+                return False
+            # skip formula cells (we don't want to match X inside a formula text like COUNTIF(...,"x"))
+            if getattr(cell, 'data_type', None) == 'f':
+                return False
+            if isinstance(v, str) and v.startswith('='):
+                return False
+
+            s = str(v).strip()
+            if not s:
+                return False
+
+            # Match only if the cell's displayed value is exactly an X-like glyph (or single-char X)
+            if x_re.fullmatch(s):
+                return True
+            # Also accept a single-character X (defensive)
+            if len(s) == 1 and x_re.match(s):
+                return True
+            return False
+        except Exception:
+            return False
+
+    # Determine which sheets to process
+    sheet_name = request.GET.get('sheet')
+    sheets = [wb[sheet_name]] if sheet_name and sheet_name in wb.sheetnames else list(wb.worksheets)
+
+    # For debug, remember first found cell
+    first_found = None
+
+    for ws in sheets:
+        try:
+            max_row = ws.max_row
+            max_col = ws.max_column
+            for r in range(1, max_row + 1):
+                for c in range(1, max_col + 1):
+                    try:
+                        cell = ws.cell(row=r, column=c)
+                        if not cell_has_x(cell):
+                            continue
+
+                        # compute pixel dims for this cell
+                        col_letter = get_column_letter(c)
+                        cell_w = get_column_width_pixels(ws, col_letter)
+                        cell_h = get_row_height_pixels(ws, r)
+
+                        # Prefer a direct cell fill so shading works without Pillow/image overlays.
+                        try:
+                            # Normalize color_hex into ARGB for PatternFill
+                            _hex = color_hex or 'FFD6D6'
+                            if len(_hex) == 6 and not _hex.upper().startswith('FF'):
+                                _argb = 'FF' + _hex
+                            elif len(_hex) == 8 and _hex.upper().startswith('FF'):
+                                _argb = _hex
+                            else:
+                                _argb = 'FF' + _hex
+                            fill = PatternFill(fill_type='solid', start_color=_argb, end_color=_argb)
+                            cell.fill = fill
+                            if first_found is None:
+                                first_found = (ws.title, f"{col_letter}{r}")
+                        except Exception:
+                            # fallback: continue if fill cannot be applied
+                            continue
+                    except Exception:
+                        # ignore per-cell errors
+                        continue
+        except Exception:
+            # ignore sheet-level errors and continue
+            continue
+
+    # If debug requested, write a small note near the first found cell
+    if request.GET.get('debug') == '1' and first_found:
+        try:
+            sheet_title, addr = first_found
+            ws = wb[sheet_title]
+            # put debug note one column to the right
+            import re as _re
+            m = _re.match(r"^([A-Z]+)(\d+)$", addr)
+            if m:
+                col = openpyxl.utils.column_index_from_string(m.group(1)) + 1
+                row = int(m.group(2))
+                ws.cell(row=row, column=col, value=f"shaded {addr}")
+        except Exception:
+            pass
+
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return FileResponse(out, as_attachment=True, filename='shaded_x_cells.xlsx')
