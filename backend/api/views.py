@@ -22,19 +22,30 @@ class RegistrationViewSet(viewsets.ModelViewSet):
     serializer_class = RegistrationSerializer
 
 
-@api_view(['POST'])
+@api_view(['GET', 'POST'])
 def record_attendance(request):
-    """Record attendance via QR scan"""
+    """Record attendance via QR scan (POST) or list attendances (GET).
+
+    GET: returns serialized list of Attendance records (same shape as the viewset list).
+    POST: existing behavior — create an Attendance from provided 'lrn'.
+    """
+    if request.method == 'GET':
+        # Return all attendance records (keeps compatibility with frontend fallback)
+        records = Attendance.objects.all()
+        serializer = AttendanceSerializer(records, many=True)
+        return Response(serializer.data)
+
+    # POST: record a new attendance
     data = request.data
     lrn = data.get('lrn')
     if not lrn:
         return Response({'error': 'LRN is required'}, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         student = Registration.objects.get(lrn=lrn)
     except Registration.DoesNotExist:
         return Response({'error': 'Student not found'}, status=status.HTTP_404_NOT_FOUND)
-    
+
     Attendance.objects.create(student=student, time=timezone.now())
     return Response({'message': f'Attendance recorded for {student.student}'}, status=status.HTTP_201_CREATED)
 

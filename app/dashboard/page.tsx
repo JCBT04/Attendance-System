@@ -1083,10 +1083,10 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                       const anchorCol = colNumber - 1;
                       const anchorRow = rowIdx - 1;
                       try {
-                        const pad = Math.max(2, Math.round(Math.min(rectW, rectH) * 0.06));
+                        const pad = Math.max(2, Math.round(Math.min(rectW, rectH) * 0.09));
                         const extW = Math.max(1, rectW - pad * 2);
                         const extH = Math.max(1, rectH - pad * 2);
-                        const colOffset = pad / Math.max(1, rectW);
+                        const colOffset = Math.max(pad / Math.max(1, rectW), 0.04);
                         const rowOffset = pad / Math.max(1, rectH);
                         worksheet.addImage(rectImageId, { tl: { col: anchorCol + colOffset, row: anchorRow + rowOffset }, ext: { width: extW, height: extH } });
                       } catch (e) {
@@ -1300,10 +1300,10 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                       const anchorColF = colNumber - 1;
                       const anchorRowF = rowIdx - 1;
                       try {
-                        const padF = Math.max(2, Math.round(Math.min(rectW, rectH) * 0.06));
+                        const padF = Math.max(2, Math.round(Math.min(rectW, rectH) * 0.09));
                         const extWF = Math.max(1, rectW - padF * 2);
                         const extHF = Math.max(1, rectH - padF * 2);
-                        const colOffsetF = padF / Math.max(1, rectW);
+                        const colOffsetF = Math.max(padF / Math.max(1, rectW), 0.04);
                         const rowOffsetF = padF / Math.max(1, rectH);
                         worksheet.addImage(rectImageId, { tl: { col: anchorColF + colOffsetF, row: anchorRowF + rowOffsetF }, ext: { width: extWF, height: extHF } });
                       } catch (e) {}
@@ -1425,10 +1425,10 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                     for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
                     const rectImageId = workbook.addImage({ buffer: bytes.buffer, extension: 'png' });
                     try {
-                      const pad2 = Math.max(2, Math.round(Math.min(rectW, rectH) * 0.06));
+                        const pad2 = Math.max(2, Math.round(Math.min(rectW, rectH) * 0.09));
                       const extW2 = Math.max(1, rectW - pad2 * 2);
                       const extH2 = Math.max(1, rectH - pad2 * 2);
-                      const colOffset2 = pad2 / Math.max(1, rectW);
+                      const colOffset2 = Math.max(pad2 / Math.max(1, rectW), 0.04);
                       const rowOffset2 = pad2 / Math.max(1, rectH);
                       worksheet.addImage(rectImageId, { tl: { col: col - 1 + colOffset2, row: r - 1 + rowOffset2 }, ext: { width: extW2, height: extH2 } });
                     } catch {}
@@ -1492,10 +1492,10 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                     for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
                     const rectImageId = workbook.addImage({ buffer: bytes.buffer, extension: 'png' });
                       try {
-                        const pad3 = Math.max(2, Math.round(Math.min(rectW, rectH) * 0.06));
+                        const pad3 = Math.max(2, Math.round(Math.min(rectW, rectH) * 0.09));
                         const extW3 = Math.max(1, rectW - pad3 * 2);
                         const extH3 = Math.max(1, rectH - pad3 * 2);
-                        const colOffset3 = pad3 / Math.max(1, rectW);
+                        const colOffset3 = Math.max(pad3 / Math.max(1, rectW), 0.04);
                         const rowOffset3 = pad3 / Math.max(1, rectH);
                         worksheet.addImage(rectImageId, { tl: { col: col - 1 + colOffset3, row: r - 1 + rowOffset3 }, ext: { width: extW3, height: extH3 } });
                       } catch {}
