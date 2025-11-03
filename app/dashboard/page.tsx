@@ -904,8 +904,8 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                 amCtx.clearRect(0, 0, triW, triH);
                 amCtx.fillStyle = triangleColor;
                 amCtx.beginPath();
-                // triangle anchored at top-left corner but inset slightly so a small white corner remains
-                const pad = 2;
+                // triangle anchored at top-left corner - use full extents so AM matches PM size
+                const pad = 0;
                 amCtx.moveTo(pad, pad);
                 amCtx.lineTo(pad, triH - pad);
                 amCtx.lineTo(triW - pad, pad);
