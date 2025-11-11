@@ -21,8 +21,8 @@ export default function Home() {
   const [registrations, setRegistrations] = useState<Array<{ student: string; sex?: string; lrn?: string }>>([])
   const [presenceSet, setPresenceSet] = useState<Set<string>>(new Set())
   const [editDate, setEditDate] = useState<string>(() => new Date().toISOString().split("T")[0])
-  const [presentMales, setPresentMales] = useState<Array<{ student: string; lrn?: string; time?: string }>>([])
-  const [presentFemales, setPresentFemales] = useState<Array<{ student: string; lrn?: string; time?: string }>>([])
+  const [presentMales, setPresentMales] = useState<Array<{ student: string; lrn?: string; am?: string; pm?: string }>>([])
+  const [presentFemales, setPresentFemales] = useState<Array<{ student: string; lrn?: string; am?: string; pm?: string }>>([])
   const [today, setToday] = useState(() => new Date().toISOString().split("T")[0])
   const scannerRef = useRef<Html5Qrcode | null>(null)
   // Backend base URL. Use NEXT_PUBLIC_API_URL if provided, otherwise default to localhost:8000
@@ -274,10 +274,54 @@ export default function Home() {
   // Compute present lists for today by merging in-memory attendance, recent scans, history, and server records
   async function computeTodayPresent() {
     try {
-      const presentKeyToTime = new Map<string, string>()
+      // key -> { am?: string, pm?: string }
+      const presentMap = new Map<string, { am?: string; pm?: string }>()
 
       const normalizeNameLocal = (s: any) => ('' + (s || '')).toString().trim().replace(/\s+/g, ' ').toLowerCase()
       const normalizeLrnLocal = (s: any) => ('' + (s || '')).toString().replace(/[^0-9]/g, '').trim()
+
+      const pushTimestamp = (key: string, timeStr?: string | null) => {
+        if (!key) return
+        const t = timeStr ? timeStr.toString() : ''
+        // attempt to determine hour
+        let hr: number | null = null
+        try {
+          const m = t.match(/T(\d{2}):/)
+          if (m) hr = Number(m[1])
+          else {
+            const p = new Date(t || '')
+            if (!isNaN(p.getTime())) hr = p.getHours()
+          }
+        } catch {}
+
+        const cur = presentMap.get(key) || {}
+        if (hr === null) {
+          // unknown -> mark both if not set
+          if (!cur.am) cur.am = t
+          if (!cur.pm) cur.pm = t
+        } else if (hr < 12) {
+          // AM: keep earliest
+          if (!cur.am) cur.am = t
+          else {
+            try {
+              const ex = new Date(cur.am)
+              const inc = new Date(t)
+              if (!isNaN(ex.getTime()) && !isNaN(inc.getTime()) && inc.getTime() < ex.getTime()) cur.am = t
+            } catch {}
+          }
+        } else {
+          // PM: keep latest
+          if (!cur.pm) cur.pm = t
+          else {
+            try {
+              const ex = new Date(cur.pm)
+              const inc = new Date(t)
+              if (!isNaN(ex.getTime()) && !isNaN(inc.getTime()) && inc.getTime() > ex.getTime()) cur.pm = t
+            } catch {}
+          }
+        }
+        presentMap.set(key, cur)
+      }
 
       // In-memory attendance (current state)
       try {
@@ -287,9 +331,9 @@ export default function Home() {
             const datePart = (t.split('T')[0] || t.split(' ')[0] || '').trim()
             if (!datePart || !isTodayDate(datePart)) return
             const keyName = normalizeNameLocal(a.student || '')
-            if (keyName) presentKeyToTime.set(keyName, a.time || '')
+            if (keyName) pushTimestamp(keyName, t)
             const l = normalizeLrnLocal(a.student || '')
-            if (l) presentKeyToTime.set(l, a.time || '')
+            if (l) pushTimestamp(l, t)
           } catch (e) {}
         })
       } catch (e) {}
@@ -305,9 +349,9 @@ export default function Home() {
               const datePart = (t.split('T')[0] || t.split(' ')[0] || '').trim()
               if (!datePart || !isTodayDate(datePart)) return
               const keyName = normalizeNameLocal(s.student || s.lrn || JSON.stringify(s))
-              if (keyName) presentKeyToTime.set(keyName, s.time || '')
+              if (keyName) pushTimestamp(keyName, t)
               const l = normalizeLrnLocal(s.lrn || s.student)
-              if (l) presentKeyToTime.set(l, s.time || '')
+              if (l) pushTimestamp(l, t)
             } catch (e) {}
           })
         }
@@ -325,10 +369,10 @@ export default function Home() {
               if (!ent) return
               if (typeof ent === 'string') {
                 const key = normalizeNameLocal(ent)
-                if (key) presentKeyToTime.set(key, '')
+                if (key) pushTimestamp(key, '')
               } else if (ent && typeof ent === 'object') {
-                if (ent.lrn) presentKeyToTime.set((ent.lrn || '').toString().trim(), ent.time || '')
-                if (ent.student || ent.student_name) presentKeyToTime.set(normalizeNameLocal(ent.student || ent.student_name), ent.time || '')
+                if (ent.lrn) pushTimestamp((ent.lrn || '').toString().trim(), ent.time || '')
+                if (ent.student || ent.student_name) pushTimestamp(normalizeNameLocal(ent.student || ent.student_name), ent.time || '')
               }
             } catch (e) {}
           })
@@ -344,8 +388,8 @@ export default function Home() {
             try {
               const time = rec.time || rec.created || ''
               const keyName = normalizeNameLocal(rec.student_name || rec.student || '')
-              if (keyName) presentKeyToTime.set(keyName, time)
-              if (rec.lrn) presentKeyToTime.set((rec.lrn || '').toString().trim(), time)
+              if (keyName) pushTimestamp(keyName, time)
+              if (rec.lrn) pushTimestamp((rec.lrn || '').toString().trim(), time)
             } catch (e) {}
           })
         }
@@ -359,9 +403,9 @@ export default function Home() {
           ;(admin || []).forEach((rec: any) => {
             try {
               const time = rec.time || rec.created || rec.fields?.time || ''
-              if (rec.lrn) presentKeyToTime.set((rec.lrn || '').toString().trim(), time)
-              else if (rec.student || rec.student_name) presentKeyToTime.set(normalizeNameLocal(rec.student || rec.student_name), time)
-              else if (rec.fields && rec.fields.student) presentKeyToTime.set(normalizeNameLocal(rec.fields.student), time)
+              if (rec.lrn) pushTimestamp((rec.lrn || '').toString().trim(), time)
+              else if (rec.student || rec.student_name) pushTimestamp(normalizeNameLocal(rec.student || rec.student_name), time)
+              else if (rec.fields && rec.fields.student) pushTimestamp(normalizeNameLocal(rec.fields.student), time)
             } catch (e) {}
           })
         }
@@ -385,16 +429,18 @@ export default function Home() {
         } catch {}
       }
 
-      const males: Array<{ student: string; lrn?: string; time?: string }> = []
-      const females: Array<{ student: string; lrn?: string; time?: string }> = []
+      const males: Array<{ student: string; lrn?: string; am?: string; pm?: string }> = []
+      const females: Array<{ student: string; lrn?: string; am?: string; pm?: string }> = []
 
       regs.forEach((r) => {
         try {
           const nameKey = normalizeNameLocal(r.student)
           const lrnKey = normalizeLrnLocal(r.lrn || '')
-          const time = presentKeyToTime.get(nameKey) || presentKeyToTime.get(lrnKey) || ''
-          if (time || presentKeyToTime.has(nameKey) || (lrnKey && presentKeyToTime.has(lrnKey))) {
-            const obj = { student: r.student || r.lrn || 'Unknown', lrn: r.lrn, time }
+          const info = presentMap.get(nameKey) || (lrnKey ? presentMap.get(lrnKey) : undefined) || {}
+          if (info && (info.am || info.pm)) {
+            const obj: any = { student: r.student || r.lrn || 'Unknown', lrn: r.lrn }
+            if (info.am) obj.am = info.am
+            if (info.pm) obj.pm = info.pm
             if ((r.sex || '').toLowerCase() === 'male') males.push(obj)
             else if ((r.sex || '').toLowerCase() === 'female') females.push(obj)
             else males.push(obj)
@@ -2387,10 +2433,8 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                       </TableRow>
                     ) : (
                       presentMales.map((p, i) => {
-                        const timeOnly = formatToTimeOnly(p.time)
-                        const isPM = /PM$/i.test(timeOnly)
-                        const am = isPM ? '' : timeOnly
-                        const pm = isPM ? timeOnly : ''
+                        const am = formatToTimeOnly(p.am)
+                        const pm = formatToTimeOnly(p.pm)
                         return (
                           <TableRow key={`m-${i}`}>
                             <TableCell className="text-white">{p.student}</TableCell>
@@ -2425,10 +2469,8 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                       </TableRow>
                     ) : (
                       presentFemales.map((p, i) => {
-                        const timeOnly = formatToTimeOnly(p.time)
-                        const isPM = /PM$/i.test(timeOnly)
-                        const am = isPM ? '' : timeOnly
-                        const pm = isPM ? timeOnly : ''
+                        const am = formatToTimeOnly(p.am)
+                        const pm = formatToTimeOnly(p.pm)
                         return (
                           <TableRow key={`f-${i}`}>
                             <TableCell className="text-white">{p.student}</TableCell>
