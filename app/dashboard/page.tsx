@@ -632,6 +632,21 @@ export default function Home() {
     }
   }
 
+    // Return just the time portion like "h:mm AM/PM" (or empty string)
+    function formatToTimeOnly(input?: string | null): string {
+      try {
+        const full = formatToMMDDYYWithTime(input || '')
+        if (!full) return ''
+        const parts = full.split('|')
+        if (parts.length >= 2) return parts[1].trim()
+        // fallback: if the string contains AM/PM, try to extract that substring
+        const m = full.match(/\d{1,2}:\d{2}\s*(AM|PM)/i)
+        return m ? m[0] : ''
+      } catch (e) {
+        return ''
+      }
+    }
+
   async function startScanner() {
     try {
       const readerElem = document.getElementById("reader")
@@ -2361,22 +2376,30 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                     <TableRow>
                       <TableHead className="text-yellow-400">Name</TableHead>
                       <TableHead className="text-yellow-400">LRN</TableHead>
-                      <TableHead className="text-yellow-400">Time</TableHead>
+                      <TableHead className="text-yellow-400">AM</TableHead>
+                      <TableHead className="text-yellow-400">PM</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {presentMales.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={3} className="text-muted-foreground">No present male students</TableCell>
+                        <TableCell colSpan={4} className="text-muted-foreground">No present male students</TableCell>
                       </TableRow>
                     ) : (
-                      presentMales.map((p, i) => (
+                      presentMales.map((p, i) => {
+                        const timeOnly = formatToTimeOnly(p.time)
+                        const isPM = /PM$/i.test(timeOnly)
+                        const am = isPM ? '' : timeOnly
+                        const pm = isPM ? timeOnly : ''
+                        return (
                           <TableRow key={`m-${i}`}>
                             <TableCell className="text-white">{p.student}</TableCell>
                             <TableCell className="text-yellow-200">{p.lrn || ''}</TableCell>
-                            <TableCell className="text-yellow-200">{formatToMMDDYYWithTime(p.time) || ''}</TableCell>
+                            <TableCell className="text-yellow-200">{am}</TableCell>
+                            <TableCell className="text-yellow-200">{pm}</TableCell>
                           </TableRow>
-                      ))
+                        )
+                      })
                     )}
                   </TableBody>
                 </Table>
@@ -2391,22 +2414,30 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                     <TableRow>
                       <TableHead className="text-yellow-400">Name</TableHead>
                       <TableHead className="text-yellow-400">LRN</TableHead>
-                      <TableHead className="text-yellow-400">Time</TableHead>
+                      <TableHead className="text-yellow-400">AM</TableHead>
+                      <TableHead className="text-yellow-400">PM</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {presentFemales.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={3} className="text-muted-foreground">No present female students</TableCell>
+                        <TableCell colSpan={4} className="text-muted-foreground">No present female students</TableCell>
                       </TableRow>
                     ) : (
-                      presentFemales.map((p, i) => (
-                        <TableRow key={`f-${i}`}>
+                      presentFemales.map((p, i) => {
+                        const timeOnly = formatToTimeOnly(p.time)
+                        const isPM = /PM$/i.test(timeOnly)
+                        const am = isPM ? '' : timeOnly
+                        const pm = isPM ? timeOnly : ''
+                        return (
+                          <TableRow key={`f-${i}`}>
                             <TableCell className="text-white">{p.student}</TableCell>
                             <TableCell className="text-yellow-200">{p.lrn || ''}</TableCell>
-                            <TableCell className="text-yellow-200">{formatToMMDDYYWithTime(p.time) || ''}</TableCell>
+                            <TableCell className="text-yellow-200">{am}</TableCell>
+                            <TableCell className="text-yellow-200">{pm}</TableCell>
                           </TableRow>
-                      ))
+                        )
+                      })
                     )}
                   </TableBody>
                 </Table>
