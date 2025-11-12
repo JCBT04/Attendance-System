@@ -7,7 +7,7 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Download, Camera, Trash2, Upload, UserPlus } from "lucide-react"
+import { Download, Camera, Trash2, Upload, UserPlus, Edit } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Html5Qrcode } from "html5-qrcode"
 import ExcelJS from "exceljs"
@@ -16,6 +16,11 @@ export default function Home() {
   // Local UI state and refs
   const [open, setOpen] = useState(false)
   const [attendance, setAttendance] = useState<{ student: string; time: string }[]>([])
+  const [editOpen, setEditOpen] = useState(false)
+  const [attendanceEdits, setAttendanceEdits] = useState<{ student: string; time: string }[]>([])
+  const [registrations, setRegistrations] = useState<Array<{ student: string; sex?: string; lrn?: string }>>([])
+  const [presenceSet, setPresenceSet] = useState<Set<string>>(new Set())
+  const [editDate, setEditDate] = useState<string>(() => new Date().toISOString().split("T")[0])
   const [presentMales, setPresentMales] = useState<Array<{ student: string; lrn?: string; time?: string }>>([])
   const [presentFemales, setPresentFemales] = useState<Array<{ student: string; lrn?: string; time?: string }>>([])
   const [today, setToday] = useState(() => new Date().toISOString().split("T")[0])
@@ -54,6 +59,180 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // When opening the edit dialog, seed the editable copy from current attendance
+  useEffect(() => {
+    if (editOpen) {
+      try {
+        setAttendanceEdits(
+          (attendance || []).map((a) => {
+            // Prefer YYYY-MM-DD portion of existing time values; fallback to today's date
+            let t = '' + (a && a.time ? a.time : '')
+            let datePart = ''
+            try {
+              datePart = (t.split('T')[0] || t.split(' ')[0] || today) as string
+            } catch (e) {
+              datePart = today
+            }
+            if (!datePart) datePart = today
+            return { student: a.student, time: datePart }
+          }),
+        )
+      } catch (e) {
+        setAttendanceEdits([])
+      }
+    }
+  }, [editOpen])
+
+  // Load registrations and presence for selected date when edit dialog opens or date changes
+  async function loadRegistrationsAndPresence(date: string) {
+    // load registrations from server or localStorage
+    try {
+      const res = await fetch(`${API_BASE}/api/registrations/`)
+      if (res.ok) {
+        const regs = await res.json()
+        try {
+          const sorted = (regs || []).slice().sort((a: any, b: any) =>
+            ('' + (a?.student || '')).localeCompare('' + (b?.student || ''), undefined, { sensitivity: 'base' }),
+          )
+          setRegistrations(sorted)
+        } catch {
+          setRegistrations(regs || [])
+        }
+      } else {
+        const raw = localStorage.getItem('registrations')
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw)
+            const sorted = (parsed || []).slice().sort((a: any, b: any) =>
+              ('' + (a?.student || '')).localeCompare('' + (b?.student || ''), undefined, { sensitivity: 'base' }),
+            )
+            setRegistrations(sorted)
+          } catch {
+            setRegistrations(JSON.parse(raw))
+          }
+        }
+      }
+    } catch (e) {
+      try {
+        const raw = localStorage.getItem('registrations')
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw)
+            const sorted = (parsed || []).slice().sort((a: any, b: any) =>
+              ('' + (a?.student || '')).localeCompare('' + (b?.student || ''), undefined, { sensitivity: 'base' }),
+            )
+            setRegistrations(sorted)
+          } catch {
+            setRegistrations(JSON.parse(raw))
+          }
+        }
+      } catch {}
+    }
+
+    // load presence for date
+    try {
+      const s = new Set<string>()
+      // attendance_history
+      try {
+        const histRaw = localStorage.getItem('attendance_history')
+        if (histRaw) {
+          const hist = JSON.parse(histRaw || '{}') as Record<string, any[]>
+          const entries = hist[date] || []
+          entries.forEach((ent) => {
+            if (!ent) return
+            if (typeof ent === 'string') {
+              s.add(ent.toString().trim().toLowerCase())
+            } else if (ent && typeof ent === 'object') {
+              if (ent.lrn) s.add((ent.lrn || '').toString().trim())
+              if (ent.student || ent.student_name) s.add((ent.student || ent.student_name || '').toString().trim().toLowerCase())
+            }
+          })
+        }
+      } catch (e) {}
+
+      // attendance_simple recent scans (may include today's date)
+      // Also normalize names and LRNs so matching is robust for the edit dialog.
+      try {
+        const simpleRaw = localStorage.getItem('attendance_simple')
+        if (simpleRaw) {
+          const simple = JSON.parse(simpleRaw || '[]') as Array<any>
+          const normalizeName = (x: any) => ('' + (x || '')).toString().trim().replace(/\s+/g, ' ').toLowerCase()
+          const normalizeLrn = (x: any) => ('' + (x || '')).toString().replace(/[^0-9]/g, '').trim()
+          simple.forEach((sentry) => {
+            try {
+              const t = (sentry && sentry.time) ? sentry.time.toString() : ''
+              const datePart = (t.split('T')[0] || t.split(' ')[0] || '')
+              if (!datePart) return
+              if (datePart === date) {
+                if (sentry.lrn) {
+                  const lval = (sentry.lrn || '').toString().trim()
+                  if (lval) s.add(lval)
+                  const onlyDigits = normalizeLrn(lval)
+                  if (onlyDigits) s.add(onlyDigits)
+                }
+                if (sentry.student) {
+                  const nameVal = (sentry.student || '').toString().trim()
+                  const nn = normalizeName(nameVal)
+                  if (nn) s.add(nn)
+                  // also add a cleaned token-stripped variant to be more permissive
+                  const cleaned = nameVal.replace(/[()\[\]{}]|[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+                  if (cleaned) s.add(cleaned)
+                }
+              }
+            } catch (e) {}
+          })
+        }
+      } catch (e) {}
+
+      // try server-side attendance for date (best-effort)
+      try {
+        const srvRes = await fetch(`${API_BASE}/api/attendance/?date=${encodeURIComponent(date)}`)
+        if (srvRes.ok) {
+          const srv = await srvRes.json()
+          ;(srv || []).forEach((rec: any) => {
+            try {
+              if (rec.lrn) s.add((rec.lrn || '').toString().trim())
+              else if (rec.student_name) s.add((rec.student_name || '').toString().trim().toLowerCase())
+              else if (rec.student) s.add((rec.student || '').toString().trim().toLowerCase())
+            } catch (e) {}
+          })
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      // also try admin attendance endpoint which some backends expose
+      try {
+        const adminRes = await fetch(`${API_BASE}/admin/api/attendance/?date=${encodeURIComponent(date)}`)
+        if (adminRes.ok) {
+          const admin = await adminRes.json()
+          ;(admin || []).forEach((rec: any) => {
+            try {
+              if (rec.lrn) s.add((rec.lrn || '').toString().trim())
+              else if (rec.student) s.add((rec.student || rec.student_name || '').toString().trim().toLowerCase())
+              else if (rec.student_name) s.add((rec.student_name || '').toString().trim().toLowerCase())
+              else if (rec.fields && rec.fields.student) s.add((rec.fields.student || '').toString().trim().toLowerCase())
+            } catch (e) {}
+          })
+        }
+      } catch (e) {
+        // ignore admin fetch failures
+      }
+
+      setPresenceSet(s)
+    } catch (e) {}
+  }
+
+  useEffect(() => {
+    if (!editOpen) return
+    let mounted = true
+    ;(async () => {
+      await loadRegistrationsAndPresence(editDate)
+    })()
+    return () => { mounted = false }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editOpen, editDate])
+
   // Recompute grouped present lists whenever attendance (or localStorage) changes
   useEffect(() => {
     try {
@@ -90,6 +269,147 @@ export default function Home() {
       // ignore
     }
     return false
+  }
+
+  // Compute present lists for today by merging in-memory attendance, recent scans, history, and server records
+  async function computeTodayPresent() {
+    try {
+      const presentKeyToTime = new Map<string, string>()
+
+      const normalizeNameLocal = (s: any) => ('' + (s || '')).toString().trim().replace(/\s+/g, ' ').toLowerCase()
+      const normalizeLrnLocal = (s: any) => ('' + (s || '')).toString().replace(/[^0-9]/g, '').trim()
+
+      // In-memory attendance (current state)
+      try {
+        (attendance || []).forEach((a) => {
+          try {
+            const t = a && a.time ? a.time.toString() : ''
+            const datePart = (t.split('T')[0] || t.split(' ')[0] || '').trim()
+            if (!datePart || !isTodayDate(datePart)) return
+            const keyName = normalizeNameLocal(a.student || '')
+            if (keyName) presentKeyToTime.set(keyName, a.time || '')
+            const l = normalizeLrnLocal(a.student || '')
+            if (l) presentKeyToTime.set(l, a.time || '')
+          } catch (e) {}
+        })
+      } catch (e) {}
+
+      // attendance_simple (recent local scans)
+      try {
+        const simpleRaw = localStorage.getItem('attendance_simple')
+        if (simpleRaw) {
+          const simple = JSON.parse(simpleRaw || '[]') as Array<{ student?: string; time?: string; lrn?: string }>
+          simple.forEach((s) => {
+            try {
+              const t = s && s.time ? s.time.toString() : ''
+              const datePart = (t.split('T')[0] || t.split(' ')[0] || '').trim()
+              if (!datePart || !isTodayDate(datePart)) return
+              const keyName = normalizeNameLocal(s.student || s.lrn || JSON.stringify(s))
+              if (keyName) presentKeyToTime.set(keyName, s.time || '')
+              const l = normalizeLrnLocal(s.lrn || s.student)
+              if (l) presentKeyToTime.set(l, s.time || '')
+            } catch (e) {}
+          })
+        }
+      } catch (e) {}
+
+      // attendance_history (persistent)
+      try {
+        const histRaw = localStorage.getItem('attendance_history')
+        if (histRaw) {
+          const hist = JSON.parse(histRaw || '{}') as Record<string, any[]>
+          const todayKey = new Date().toISOString().split('T')[0]
+          const entries = hist[todayKey] || []
+          entries.forEach((ent) => {
+            try {
+              if (!ent) return
+              if (typeof ent === 'string') {
+                const key = normalizeNameLocal(ent)
+                if (key) presentKeyToTime.set(key, '')
+              } else if (ent && typeof ent === 'object') {
+                if (ent.lrn) presentKeyToTime.set((ent.lrn || '').toString().trim(), ent.time || '')
+                if (ent.student || ent.student_name) presentKeyToTime.set(normalizeNameLocal(ent.student || ent.student_name), ent.time || '')
+              }
+            } catch (e) {}
+          })
+        }
+      } catch (e) {}
+
+      // server-side recent records (best-effort)
+      try {
+        const res = await fetch(`${API_BASE}/api/attendance/today/`)
+        if (res.ok) {
+          const srv = await res.json()
+          ;(srv || []).forEach((rec: any) => {
+            try {
+              const time = rec.time || rec.created || ''
+              const keyName = normalizeNameLocal(rec.student_name || rec.student || '')
+              if (keyName) presentKeyToTime.set(keyName, time)
+              if (rec.lrn) presentKeyToTime.set((rec.lrn || '').toString().trim(), time)
+            } catch (e) {}
+          })
+        }
+      } catch (e) {}
+
+      // also try admin attendance endpoint for today's records (some deployments expose admin API)
+      try {
+        const adminRes = await fetch(`${API_BASE}/admin/api/attendance/?date=${new Date().toISOString().split('T')[0]}`)
+        if (adminRes.ok) {
+          const admin = await adminRes.json()
+          ;(admin || []).forEach((rec: any) => {
+            try {
+              const time = rec.time || rec.created || rec.fields?.time || ''
+              if (rec.lrn) presentKeyToTime.set((rec.lrn || '').toString().trim(), time)
+              else if (rec.student || rec.student_name) presentKeyToTime.set(normalizeNameLocal(rec.student || rec.student_name), time)
+              else if (rec.fields && rec.fields.student) presentKeyToTime.set(normalizeNameLocal(rec.fields.student), time)
+            } catch (e) {}
+          })
+        }
+      } catch (e) {
+        // ignore admin fetch errors
+      }
+
+      // Fetch registrations and map to present lists
+      let regs: Array<{ student: string; sex?: string; lrn?: string }> = []
+      try {
+        const regRes = await fetch(`${API_BASE}/api/registrations/`)
+        if (regRes.ok) regs = await regRes.json()
+        else {
+          const regRaw = localStorage.getItem('registrations')
+          if (regRaw) regs = JSON.parse(regRaw)
+        }
+      } catch (e) {
+        try {
+          const regRaw = localStorage.getItem('registrations')
+          if (regRaw) regs = JSON.parse(regRaw)
+        } catch {}
+      }
+
+      const males: Array<{ student: string; lrn?: string; time?: string }> = []
+      const females: Array<{ student: string; lrn?: string; time?: string }> = []
+
+      regs.forEach((r) => {
+        try {
+          const nameKey = normalizeNameLocal(r.student)
+          const lrnKey = normalizeLrnLocal(r.lrn || '')
+          const time = presentKeyToTime.get(nameKey) || presentKeyToTime.get(lrnKey) || ''
+          if (time || presentKeyToTime.has(nameKey) || (lrnKey && presentKeyToTime.has(lrnKey))) {
+            const obj = { student: r.student || r.lrn || 'Unknown', lrn: r.lrn, time }
+            if ((r.sex || '').toLowerCase() === 'male') males.push(obj)
+            else if ((r.sex || '').toLowerCase() === 'female') females.push(obj)
+            else males.push(obj)
+          }
+        } catch (e) {}
+      })
+
+      const byName = (x: any, y: any) => ('' + (x.student || '')).localeCompare('' + (y.student || ''))
+      males.sort(byName)
+      females.sort(byName)
+      setPresentMales(males)
+      setPresentFemales(females)
+    } catch (err) {
+      console.error('Failed to compute today present:', err)
+    }
   }
 
   // Schedule a daily refresh at local midnight so the table shows only today's scans
@@ -177,149 +497,82 @@ export default function Home() {
 
   // Add attendance by sending LRN or student identifier to backend and refresh
   async function addAttendance(lrnOrStudent: string) {
-    try {
-      let lrn = lrnOrStudent
-      const looksLikeName = /[a-zA-Z]/.test(lrnOrStudent) && /\s/.test(lrnOrStudent)
-      if (looksLikeName) {
-        try {
-          const regRes = await fetch(`${API_BASE}/api/registrations/`)
-          if (regRes.ok) {
-            const regs = await regRes.json()
-            const normalized = (lrnOrStudent || "").toString().trim().toLowerCase()
-            const found = regs.find((r: any) => (r.student || "").toString().trim().toLowerCase() === normalized)
-            if (found && found.lrn) {
-              lrn = found.lrn
-            } else {
-              alert("Scanned name not found in registrations. Please register the student first or include LRN in the QR.")
-              return
-            }
-          }
-        } catch (lookupErr) {
-          console.error("Lookup by name failed:", lookupErr)
-          alert("Could not resolve scanned name to a registered LRN. Ensure QR contains the student LRN or register the student first.")
-          return
-        }
-      }
+    // Try to record attendance on the server first. If the server call fails (student not found
+    // or network error), fall back to storing the scan locally in localStorage so the UI can show
+    // today's scans even when offline or when the backend rejects the request.
+    const candidate = (lrnOrStudent || '').toString().trim()
+    const nowIso = new Date().toISOString()
 
-      const payload = { lrn }
+    try {
+      const body = { lrn: candidate }
       const res = await fetch(`${API_BASE}/api/attendance/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
       })
-      if (!res.ok) {
-        let msg = null
-        try {
-          const body = await res.json()
-          msg = body && (body.error || body.detail || body.message)
-        } catch {}
-        alert(msg || "Failed to record attendance")
+
+      if (res.ok) {
+        // Successfully recorded on server. Refresh today's attendance and recompute present lists.
+        try { await fetchTodayAttendance() } catch {}
+        try { computeTodayPresent() } catch {}
         return
       }
 
-      // Refresh list
-      await fetchTodayAttendance()
-    } catch (err) {
-      console.error("Failed to add attendance:", err)
-      alert("Failed to add attendance")
+      // Non-OK response (e.g. student not found). We'll fall back to localStorage below.
+      try {
+        const txt = await res.text()
+        console.warn('Server rejected attendance record:', txt)
+      } catch {}
+    } catch (e) {
+      // Network or other error — continue to local fallback
+      console.warn('Failed to reach attendance API, saving locally instead:', e)
     }
-  }
 
-  // Compute today's present students grouped by sex, sorted alphabetically.
-  async function computeTodayPresent() {
+    // Local fallback: append to attendance_simple and attendance_history so computeTodayPresent
+    // and fetchTodayAttendance fallbacks will pick it up.
     try {
-      // Build a map of present keys -> time for today's scans
-      const presentKeyToTime = new Map<string, string>()
-      const normalizeName = (s: any) =>
-        (s || "")
-          .toString()
-          .trim()
-          .replace(/\s+/g, " ")
-          .toLowerCase()
+      const simpleRaw = localStorage.getItem('attendance_simple') || '[]'
+      const simple = JSON.parse(simpleRaw) as any[]
+      const entry = { student: candidate, lrn: candidate, time: nowIso }
+      simple.push(entry)
+      localStorage.setItem('attendance_simple', JSON.stringify(simple))
 
-      const normalizeLrn = (s: any) => {
-        const str = (s || "").toString()
-        const digits = (str.match(/\d+/g) || []).join("")
-        return digits || null
+      // also update attendance_history by date
+      try {
+        const histRaw = localStorage.getItem('attendance_history') || '{}'
+        const hist = JSON.parse(histRaw) as Record<string, any[]>
+        const key = nowIso.split('T')[0]
+        hist[key] = hist[key] || []
+        hist[key].push(entry)
+        localStorage.setItem('attendance_history', JSON.stringify(hist))
+      } catch (e) {
+        // ignore history write failures
       }
 
-      // From already loaded `attendance` state
-      (attendance || []).forEach((a) => {
-        const nm = normalizeName(a.student)
-        if (nm) presentKeyToTime.set(nm, a.time || "")
-        const l = normalizeLrn(a.student)
-        if (l) presentKeyToTime.set(l, a.time || "")
-      })
+      // Update UI state and recompute present lists immediately
+      setAttendance((prev) => [...prev, { student: entry.student, time: entry.time }])
+      try { computeTodayPresent() } catch {}
 
-      // Also include attendance_simple from localStorage for immediate scans, but only today's entries
+      // Also proactively load registrations/presence for today and add matching keys to presenceSet
       try {
-        const simpleRaw = localStorage.getItem('attendance_simple')
-        if (simpleRaw) {
-          const simple = JSON.parse(simpleRaw || '[]') as Array<{ student?: string; time?: string; lrn?: string }>
-          simple.forEach((s) => {
-            // Determine if this scan is for today (local)
-            const t = s && s.time ? s.time.toString() : ''
-            // Accept both 'YYYY-MM-DDT..' and 'YYYY-MM-DD ..' shapes
-            const datePart = (t.split('T')[0] || t.split(' ')[0] || '').trim()
-            if (!datePart || !isTodayDate(datePart)) return
-            const keyName = normalizeName(s.student || s.lrn || JSON.stringify(s))
-            if (keyName) presentKeyToTime.set(keyName, s.time || '')
-            const l = normalizeLrn(s.lrn || s.student)
-            if (l) presentKeyToTime.set(l, s.time || '')
-          })
-        }
+        const todayKey = nowIso.split('T')[0]
+        try { await loadRegistrationsAndPresence(todayKey) } catch {}
+        setPresenceSet((prev) => {
+          const next = new Set(Array.from(prev || []))
+          const normName = (entry.student || '').toString().trim().toLowerCase().replace(/\s+/g, ' ')
+          const digits = (entry.lrn || '').toString().replace(/[^0-9]/g, '').trim()
+          if (normName) next.add(normName)
+          if (digits) next.add(digits)
+          return next
+        })
+        try { computeTodayPresent() } catch {}
       } catch (e) {
         // ignore
       }
-
-      // Fetch registrations from backend (fallback to localStorage)
-      let registrations: { student: string; sex: string; lrn: string }[] = []
-      try {
-        const regRes = await fetch(`${API_BASE}/api/registrations/`)
-        if (regRes.ok) registrations = await regRes.json()
-        else {
-          const regRaw = localStorage.getItem('registrations')
-          if (regRaw) registrations = JSON.parse(regRaw)
-        }
-      } catch (e) {
-        try {
-          const regRaw = localStorage.getItem('registrations')
-          if (regRaw) registrations = JSON.parse(regRaw)
-        } catch {}
-      }
-
-      const males: Array<{ student: string; lrn?: string; time?: string }> = []
-      const females: Array<{ student: string; lrn?: string; time?: string }> = []
-
-      // Build set of matched keys so we can collect unregistered later
-      const matchedKeys = new Set<string>()
-
-      registrations.forEach((r) => {
-        const nameKey = normalizeName(r.student)
-        const lrnKey = normalizeLrn(r.lrn) || ''
-        const time = presentKeyToTime.get(nameKey) || presentKeyToTime.get(lrnKey) || ''
-        if (time || presentKeyToTime.has(nameKey) || (lrnKey && presentKeyToTime.has(lrnKey))) {
-          matchedKeys.add(nameKey)
-          if (lrnKey) matchedKeys.add(lrnKey)
-          const obj = { student: r.student || r.lrn || 'Unknown', lrn: r.lrn, time }
-          if ((r.sex || '').toLowerCase() === 'male') males.push(obj)
-          else if ((r.sex || '').toLowerCase() === 'female') females.push(obj)
-          else males.push(obj) // default to males if sex missing to still show
-        }
-      })
-
-      // Sort alphabetically by student name
-      const byName = (x: any, y: any) => ('' + (x.student || '')).localeCompare('' + (y.student || ''))
-      males.sort(byName)
-      females.sort(byName)
-      setPresentMales(males)
-      setPresentFemales(females)
-    } catch (err) {
-      console.error('Failed to compute today present:', err)
-      alert('Failed to compute today present list')
+    } catch (e) {
+      console.error('Failed to persist attendance locally:', e)
     }
   }
-
 
   function parseStudentFromQr(qrMessage: string): string | null {
     try {
@@ -385,6 +638,29 @@ export default function Home() {
       if (!readerElem) {
         console.warn("Reader element not found yet.")
         return
+      }
+      // First request camera permission explicitly so we can show a friendlier message
+      // if permission is denied (html5-qrcode may surface a less helpful error).
+      try {
+        if (navigator && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+          // Immediately stop the acquired tracks - Html5Qrcode will open the camera itself.
+          try {
+            stream.getTracks().forEach((t) => t.stop())
+          } catch (e) {}
+        }
+      } catch (permErr: any) {
+        console.error('Camera permission error:', permErr)
+        if (permErr && (permErr.name === 'NotAllowedError' || permErr.name === 'PermissionDeniedError')) {
+          alert('Camera permission was denied. Please allow camera access in your browser settings for this site, or use the "Upload QR Image" option to select a QR image.')
+          // Open the upload input as a helpful fallback so the user can immediately select an image
+          try {
+            const fileInput = document.getElementById('qrImageInput') as HTMLInputElement | null
+            if (fileInput) fileInput.click()
+          } catch (e) {}
+          return
+        }
+        // Other errors fall through to attempt scanner start which will also gracefully fail
       }
 
       if (!scannerRef.current) {
@@ -476,6 +752,163 @@ export default function Home() {
     } catch (err) {
       console.error("Image scan failed:", err)
       alert(`Failed to read QR code from image: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  // Edit dialog helpers
+  function updateEditField(idx: number, field: 'student' | 'time', value: string) {
+    setAttendanceEdits((prev) => {
+      const copy = prev.slice()
+      copy[idx] = { ...copy[idx], [field]: value }
+      return copy
+    })
+  }
+
+  function removeEditRow(idx: number) {
+    setAttendanceEdits((prev) => prev.filter((_, i) => i !== idx))
+  }
+
+  async function saveEdits() {
+    try {
+      // Update UI state
+      setAttendance(attendanceEdits.map((a) => ({ student: a.student, time: a.time })))
+      // Persist to localStorage so edits survive refresh (this mirrors how quick scans are stored)
+      try {
+        localStorage.setItem('attendance_simple', JSON.stringify(attendanceEdits))
+      } catch {}
+      // Try to sync edits to server where possible (match student -> lrn via registrations)
+      try {
+        // Load registrations to map names to LRN
+        let regs: any[] = []
+        try {
+          const r = await fetch(`${API_BASE}/api/registrations/`)
+          if (r.ok) regs = await r.json()
+          else {
+            const raw = localStorage.getItem('registrations')
+            regs = raw ? JSON.parse(raw) : []
+          }
+        } catch (e) {
+          const raw = localStorage.getItem('registrations')
+          regs = raw ? JSON.parse(raw) : []
+        }
+
+        const nameToLrn = new Map<string, string>()
+        regs.forEach((rr: any) => {
+          try { nameToLrn.set((rr.student || '').toString().trim().toLowerCase(), (rr.lrn || '').toString().trim()) } catch {}
+        })
+
+        // Deduplicate LRNs we will post so we don't spam server with duplicates
+        const toPost = new Set<string>()
+        for (const a of attendanceEdits) {
+          try {
+            const candidate = (((a as any).lrn) || a.student || '').toString().trim()
+            let lrnToSend = ''
+            // Prefer explicit numeric LRN-looking values
+            const digits = candidate.replace(/[^0-9]/g, '')
+            if (digits && digits.length >= 3) lrnToSend = digits
+            else {
+              const mapped = nameToLrn.get((a.student || '').toString().trim().toLowerCase())
+              if (mapped) lrnToSend = mapped
+            }
+            if (lrnToSend) toPost.add(lrnToSend)
+          } catch (e) {}
+        }
+
+        for (const lrn of Array.from(toPost)) {
+          try {
+            await fetch(`${API_BASE}/api/attendance/`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ lrn }),
+            })
+          } catch (e) {
+            // ignore per-item failures
+          }
+        }
+      } catch (e) {
+        // ignore sync errors
+      }
+
+      setEditOpen(false)
+      // Recompute present lists and refresh today's attendance to ensure dashboard updates
+      try { computeTodayPresent() } catch {}
+      try { await fetchTodayAttendance() } catch {}
+    } catch (e) {
+      console.error('Failed to save edits', e)
+      alert('Failed to save edits')
+    }
+  }
+
+  // Toggle presence for a registration row (by LRN if present, else by normalized name)
+  function togglePresenceForReg(reg: { student: string; lrn?: string }) {
+    const key = (reg.lrn && reg.lrn.toString().trim()) || (reg.student || '').toString().trim().toLowerCase()
+    setPresenceSet((prev) => {
+      const next = new Set(Array.from(prev))
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  // Save presence for the selected editDate into localStorage (attendance_history) and update UI if editing today
+  async function savePresence() {
+    try {
+      // Build entries for present students
+      const presentEntries: any[] = []
+      registrations.forEach((r) => {
+        const key = (r.lrn && r.lrn.toString().trim()) || (r.student || '').toString().trim().toLowerCase()
+        if (presenceSet.has(key)) {
+          presentEntries.push({ student: r.student, lrn: r.lrn, time: `${editDate}T00:00:00` })
+        }
+      })
+
+      // Merge into attendance_history
+      try {
+        const raw = localStorage.getItem('attendance_history')
+        const hist = raw ? JSON.parse(raw || '{}') as Record<string, any[]> : {}
+        hist[editDate] = presentEntries
+        localStorage.setItem('attendance_history', JSON.stringify(hist))
+      } catch (e) {
+        console.error('Failed to persist attendance_history', e)
+      }
+
+      // If editing today, update attendance_simple and in-memory state for immediate UI reflection
+      const todayKey = new Date().toISOString().split('T')[0]
+      if (editDate === todayKey) {
+        try {
+          // attendance_simple is an array of { student, time, lrn }
+          const simple = presentEntries.map((p) => ({ student: p.student, time: p.time, lrn: p.lrn }))
+          localStorage.setItem('attendance_simple', JSON.stringify(simple))
+          // update in-memory attendance list to reflect new presents
+          setAttendance(simple.map((s) => ({ student: s.student || s.lrn || JSON.stringify(s), time: s.time || '' })))
+        } catch (e) {}
+      }
+
+      // Try to sync present entries to server (create Attendance records) when we have LRNs
+      try {
+        const lrns = Array.from(new Set(presentEntries.map((p) => (p.lrn || '').toString().trim()).filter((x) => !!x)))
+        for (const l of lrns) {
+          try {
+            await fetch(`${API_BASE}/api/attendance/`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ lrn: l }),
+            })
+          } catch (e) {
+            // ignore per-item failures
+          }
+        }
+      } catch (e) {
+        // ignore overall sync errors
+      }
+
+      setEditOpen(false)
+      // recompute present lists and refresh today's attendance so the UI shows changes
+      try { computeTodayPresent() } catch {}
+      try { await fetchTodayAttendance() } catch {}
+    } catch (e) {
+      console.error('Failed to save presence', e)
+      alert('Failed to save presence')
     }
   }
 // removed top-level scanner/handler functions; implementations are inside the component so they can
@@ -1775,8 +2208,8 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
 // PDF export removed per user request
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 p-6 text-white">
-      <Card className="max-w-5xl w-full border-yellow-500 border-2 bg-white/10 backdrop-blur-lg text-white">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 p-6 text-black">
+      <Card className="max-w-5xl w-full border-yellow-500 border-2 bg-white/10 backdrop-blur-lg text-black">
         <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="text-center text-yellow-400 text-2xl">Student Attendance Dashboard</CardTitle>
 
@@ -1824,13 +2257,82 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                     <label className="flex items-center gap-2 cursor-pointer text-yellow-400 hover:underline">
                       <Upload className="h-4 w-4" />
                       Upload QR Image
-                      <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+                      <input id="qrImageInput" type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
                     </label>
                   </div>
 
                   <DialogFooter>
                     <Button variant="destructive" onClick={stopScanner}>
                       Stop
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+
+              <Dialog
+                open={editOpen}
+                onOpenChange={(val) => {
+                  setEditOpen(val)
+                }}
+              >
+                <DialogTrigger asChild>
+                  <Button variant="outline">
+                    <Edit className="h-4 w-4 mr-2" />
+                    Edit Attendance
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-lg w-full bg-white/10 backdrop-blur-lg border border-yellow-500/50 text-white rounded-lg p-6">
+                  <DialogHeader>
+                    <DialogTitle className="text-yellow-400 text-lg font-semibold">Edit Attendance</DialogTitle>
+                  </DialogHeader>
+
+                  <div className="mt-2 flex items-center gap-3">
+                    <label className="text-sm text-yellow-200">Date:</label>
+                    <input
+                      type="date"
+                      value={editDate}
+                      onChange={(e) => setEditDate(e.target.value)}
+                      className="rounded px-2 py-1 border border-yellow-400/20 bg-transparent text-white"
+                    />
+                    <Button variant="default" className="bg-yellow-400 text-black py-1 px-3" onClick={() => loadRegistrationsAndPresence(editDate)} aria-label="Reload registrations">
+                      Reload
+                    </Button>
+                  </div>
+
+                  <div className="mt-4 max-h-72 overflow-auto">
+                    {registrations.length === 0 ? (
+                      <p className="text-yellow-200">No registrations found.</p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {registrations.map((r, i) => {
+                          const key = (r.lrn && r.lrn.toString().trim()) || (r.student || '').toString().trim().toLowerCase()
+                          const checked = presenceSet.has(key)
+                          const stableKey = r.lrn || r.student || `idx-${i}`
+                          return (
+                            <li key={`reg-${stableKey}`} className="flex items-center gap-3 py-2 px-1 rounded hover:bg-white/5">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => togglePresenceForReg(r)}
+                                className="w-5 h-5 accent-yellow-400"
+                              />
+                              <div className="flex-1">
+                                <div className="font-medium text-white">{r.student}</div>
+                                <div className="text-sm text-yellow-300">{r.lrn || ''}</div>
+                              </div>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    )}
+                  </div>
+
+                  <DialogFooter>
+                    <Button onClick={savePresence} className="mr-2">
+                      Save
+                    </Button>
+                    <Button variant="secondary" onClick={() => setEditOpen(false)}>
+                      Cancel
                     </Button>
                   </DialogFooter>
                 </DialogContent>
@@ -1869,11 +2371,11 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                       </TableRow>
                     ) : (
                       presentMales.map((p, i) => (
-                        <TableRow key={`m-${i}`}>
-                          <TableCell>{p.student}</TableCell>
-                          <TableCell>{p.lrn || ''}</TableCell>
-                          <TableCell>{formatToMMDDYYWithTime(p.time) || ''}</TableCell>
-                        </TableRow>
+                          <TableRow key={`m-${i}`}>
+                            <TableCell className="text-white">{p.student}</TableCell>
+                            <TableCell className="text-yellow-200">{p.lrn || ''}</TableCell>
+                            <TableCell className="text-yellow-200">{formatToMMDDYYWithTime(p.time) || ''}</TableCell>
+                          </TableRow>
                       ))
                     )}
                   </TableBody>
@@ -1900,10 +2402,10 @@ async function downloadExcel(_attendance?: { student: string; time: string }[], 
                     ) : (
                       presentFemales.map((p, i) => (
                         <TableRow key={`f-${i}`}>
-                          <TableCell>{p.student}</TableCell>
-                          <TableCell>{p.lrn || ''}</TableCell>
-                          <TableCell>{formatToMMDDYYWithTime(p.time) || ''}</TableCell>
-                        </TableRow>
+                            <TableCell className="text-white">{p.student}</TableCell>
+                            <TableCell className="text-yellow-200">{p.lrn || ''}</TableCell>
+                            <TableCell className="text-yellow-200">{formatToMMDDYYWithTime(p.time) || ''}</TableCell>
+                          </TableRow>
                       ))
                     )}
                   </TableBody>
